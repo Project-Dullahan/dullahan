@@ -1,0 +1,8 @@
+un.org
+wfp.org
+msf.org
+icrc.org
+reliefweb.int
+who.int
+unhcr.org
+savechildren.org
