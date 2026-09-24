@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # adweight
 
 A small command-line tool that scans a webpage and reports how much of its
@@ -77,3 +78,7 @@ cargo build --release
 Not yet chosen — decide this once you know how you want others to be able
 to use/modify/redistribute it. MIT or Apache-2.0 are the common defaults
 for a small open-source CLI tool like this if you want permissive reuse.
+=======
+# dullahan
+A lightweight, air-gapped, terminal-based threat intelligence suite for defensive security and humanitarian use.
+>>>>>>> origin/main
