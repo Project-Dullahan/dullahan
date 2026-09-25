@@ -18,16 +18,12 @@ use std::io;
 use std::path::PathBuf;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-enum DomainTag {
-    Safe, Malicious, Investigate, None,
-}
+enum DomainTag { Safe, Malicious, Investigate, None }
 impl DomainTag {
     fn marker(&self) -> &'static str {
         match self {
-            DomainTag::Safe => "[S]",
-            DomainTag::Malicious => "[M]",
-            DomainTag::Investigate => "[I]",
-            DomainTag::None => "",
+            DomainTag::Safe => "[S]", DomainTag::Malicious => "[M]",
+            DomainTag::Investigate => "[I]", DomainTag::None => "",
         }
     }
 }
@@ -36,41 +32,22 @@ impl DomainTag {
 enum RiskLevel { High, Obfuscated, Neutral, Offline }
 impl RiskLevel {
     fn marker(&self) -> &'static str {
-        match self {
-            RiskLevel::High => "R", RiskLevel::Obfuscated => "Y",
-            RiskLevel::Neutral => "G", RiskLevel::Offline => "O",
-        }
+        match self { RiskLevel::High => "R", RiskLevel::Obfuscated => "Y", RiskLevel::Neutral => "G", RiskLevel::Offline => "O" }
     }
     fn color(&self) -> Color {
-        match self {
-            RiskLevel::High => Color::Red, RiskLevel::Obfuscated => Color::Yellow,
-            RiskLevel::Neutral => Color::Green, RiskLevel::Offline => Color::Gray,
-        }
+        match self { RiskLevel::High => Color::Red, RiskLevel::Obfuscated => Color::Yellow, RiskLevel::Neutral => Color::Green, RiskLevel::Offline => Color::Gray }
     }
     fn as_str(&self) -> &'static str {
-        match self {
-            RiskLevel::High => "HIGH RISK", RiskLevel::Obfuscated => "OBFUSCATED",
-            RiskLevel::Neutral => "NEUTRAL", RiskLevel::Offline => "OFFLINE",
-        }
+        match self { RiskLevel::High => "HIGH RISK", RiskLevel::Obfuscated => "OBFUSCATED", RiskLevel::Neutral => "NEUTRAL", RiskLevel::Offline => "OFFLINE" }
     }
 }
 
 #[derive(Clone)]
-struct DomainIntel {
-    name: String, risk: RiskLevel, lat: f64, lon: f64,
-    ips: Vec<String>, details: String, safemode_alerts: Vec<String>, tag: DomainTag,
-}
+struct DomainIntel { name: String, risk: RiskLevel, lat: f64, lon: f64, ips: Vec<String>, details: String, safemode_alerts: Vec<String>, tag: DomainTag }
 #[derive(Clone)]
-struct SafemodeRule {
-    category: String, condition: String, action: String, list_type: String, threshold: u32, active: bool,
-}
-#[derive(Deserialize)]
-struct CorrelationReport { clusters: Vec<CorrelationCluster>, analyzed_domains: Vec<String> }
-#[derive(Deserialize, Clone)]
-struct CorrelationCluster {
-    cluster_id: usize, correlation_type: String, shared_indicator: String,
-    domains: Vec<String>, confidence: String, risk_assessment: String,
-}
+struct SafemodeRule { category: String, condition: String, action: String, list_type: String, threshold: u32, active: bool }
+#[derive(Deserialize)] struct CorrelationReport { clusters: Vec<CorrelationCluster>, analyzed_domains: Vec<String> }
+#[derive(Deserialize, Clone)] struct CorrelationCluster { cluster_id: usize, correlation_type: String, shared_indicator: String, domains: Vec<String>, confidence: String, risk_assessment: String }
 enum RulesetMode { Workspace, Global }
 enum AppView { Main, SafemodeManager, DossierPopup, TestResultPopup, TagPopup }
 
@@ -94,8 +71,7 @@ impl App {
         let mut list_state = ListState::default(); list_state.select(Some(0));
         let mut safemode_state = TableState::default(); safemode_state.select(Some(0));
         let mut app = Self { domains, rules, filter: None, list_state, safemode_state, view: AppView::Main, safemode_active: true, ruleset_mode: RulesetMode::Workspace, should_quit: false, tags, config_dir };
-        app.evaluate_safemode();
-        app
+        app.evaluate_safemode(); app
     }
     fn load_tags(config_dir: &PathBuf) -> HashMap<String, DomainTag> {
         let tags_path = config_dir.join("tags.json");
@@ -186,6 +162,31 @@ impl App {
         let i = match self.safemode_state.selected() { Some(i) => if i == 0 { len - 1 } else { i - 1 }, None => 0 };
         self.safemode_state.select(Some(i));
     }
+
+    /// Compiles and exports a local hosts-style blocklist based on active alerts and tags.
+    pub fn export_hosts_blocklist(&self) -> Result<(), std::io::Error> {
+        let mut blocklist_payload = String::new();
+        blocklist_payload.push_str("# ==========================================\n");
+        blocklist_payload.push_str("# DULLAHAN AUTOMATED HUMANITARIAN BLOCKLIST\n");
+        blocklist_payload.push_str("# Generated entirely offline via local policies.\n");
+        blocklist_payload.push_str("# ==========================================\n\n");
+
+                 let mut block_count = 0;
+        for domain in &self.domains {
+            if !domain.safemode_alerts.is_empty() || domain.tag == DomainTag::Malicious {
+                blocklist_payload.push_str(&format!("0.0.0.0 {}\n", domain.name));
+                block_count += 1;
+            }
+        }
+        
+        // Add a summary footer so the variable is used
+        blocklist_payload.push_str(&format!("\n# Total domains blocked: {}\n", block_count));
+
+        let export_path = self.config_dir.join("dullahan_hosts_blocklist.txt");        
+
+        std::fs::write(&export_path, blocklist_payload)?;
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), io::Error> {
@@ -193,7 +194,7 @@ fn main() -> Result<(), io::Error> {
     let input_file = if args.len() >= 3 && args[1] == "--input" { Some(args[2].clone()) } else { None };
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?; // Mouse capture removed to prevent blinking
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(input_file);
@@ -213,14 +214,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
             match app.view {
                 AppView::Main => match key.code {
                     KeyCode::Char('q') | KeyCode::Char('Q') => app.should_quit = true,
-                    KeyCode::Down | KeyCode::Char('j') => app.next(),
-                    KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                    KeyCode::Char('r') => app.filter = Some(RiskLevel::High),
-                    KeyCode::Char('y') => app.filter = Some(RiskLevel::Obfuscated),
-                    KeyCode::Char('g') => app.filter = Some(RiskLevel::Neutral),
-                    KeyCode::Char('o') => app.filter = Some(RiskLevel::Offline),
-                    KeyCode::Char('a') => app.filter = None,
-                    KeyCode::Char('s') | KeyCode::Char('S') => app.toggle_safemode(),
+                    KeyCode::Down | KeyCode::Char('j') => app.next(), KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                    KeyCode::Char('r') => app.filter = Some(RiskLevel::High), KeyCode::Char('y') => app.filter = Some(RiskLevel::Obfuscated),
+                    KeyCode::Char('g') => app.filter = Some(RiskLevel::Neutral), KeyCode::Char('o') => app.filter = Some(RiskLevel::Offline),
+                    KeyCode::Char('a') => app.filter = None, KeyCode::Char('s') | KeyCode::Char('S') => app.toggle_safemode(),
                     KeyCode::Char('m') | KeyCode::Char('M') => app.view = AppView::SafemodeManager,
                     KeyCode::Char('t') | KeyCode::Char('T') => { if app.selected_domain().is_some() { app.view = AppView::TagPopup; } }
                     KeyCode::Enter => { if app.selected_domain().is_some() { app.view = AppView::DossierPopup; } }
@@ -228,8 +225,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                 },
                 AppView::SafemodeManager => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::Main,
-                    KeyCode::Down | KeyCode::Char('j') => app.sm_next(),
-                    KeyCode::Up | KeyCode::Char('k') => app.sm_previous(),
+                    KeyCode::Down | KeyCode::Char('j') => app.sm_next(), KeyCode::Up | KeyCode::Char('k') => app.sm_previous(),
                     KeyCode::Char('+') | KeyCode::Char('=') => { if let Some(i) = app.safemode_state.selected() { if i > 0 { app.rules.swap(i, i - 1); app.safemode_state.select(Some(i - 1)); } } }
                     KeyCode::Char('-') => { if let Some(i) = app.safemode_state.selected() { if i < app.rules.len() - 1 { app.rules.swap(i, i + 1); app.safemode_state.select(Some(i + 1)); } } }
                     KeyCode::Char('a') | KeyCode::Char('A') => { app.rules.push(SafemodeRule { category: "NEW_RULE".into(), condition: "Condition here".into(), action: "WARN".into(), list_type: "Blacklist".into(), threshold: 0, active: true }); }
@@ -240,6 +236,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     KeyCode::Char('t') | KeyCode::Char('T') => app.view = AppView::TestResultPopup,
                     KeyCode::Tab => { app.ruleset_mode = match app.ruleset_mode { RulesetMode::Workspace => RulesetMode::Global, RulesetMode::Global => RulesetMode::Workspace }; }
                     KeyCode::Enter => { if let Some(i) = app.safemode_state.selected() { if i < app.rules.len() { app.rules[i].active = !app.rules[i].active; app.evaluate_safemode(); } } }
+                    KeyCode::Char('w') | KeyCode::Char('W') => { let _ = app.export_hosts_blocklist(); } // NEW KEYBIND
                     _ => {}
                 },
                 AppView::TagPopup => match key.code {
@@ -293,78 +290,82 @@ fn render_main_view(f: &mut Frame, app: &mut App) {
     f.render_widget(help, chunks[1]);
 }
 
-const CONTINENTS: &[&[(f64, f64)]] = &[
-    &[(-130.0, 70.0), (-60.0, 70.0), (-50.0, 45.0), (-80.0, 25.0), (-100.0, 20.0), (-130.0, 50.0)],
-    &[(-80.0, 10.0), (-35.0, 10.0), (-40.0, -20.0), (-70.0, -50.0), (-80.0, -10.0)],
-    &[(-10.0, 70.0), (180.0, 70.0), (180.0, 10.0), (100.0, 10.0), (40.0, 30.0), (30.0, 35.0), (10.0, 35.0), (-10.0, 35.0)],
-    &[(-20.0, 35.0), (50.0, 35.0), (50.0, -35.0), (20.0, -35.0), (-20.0, 10.0)],
-    &[(110.0, -10.0), (155.0, -10.0), (155.0, -40.0), (110.0, -40.0)],
-];
-
-fn point_in_polygon(lon: f64, lat: f64, polygon: &[(f64, f64)]) -> bool {
-    let mut inside = false;
-    let n = polygon.len();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let (xi, yi) = polygon[i];
-        let (xj, yj) = polygon[j];
-        let intersect = ((yi > lat) != (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
-        if intersect { inside = !inside; }
-    }
-    inside
-}
-
 fn render_braille_map(f: &mut Frame, area: Rect, domains: &[&DomainIntel]) {
     let height = area.height.saturating_sub(2) as usize;
     let width = area.width.saturating_sub(2) as usize;
     if height < 4 || width < 4 { return; }
-    let inner_h = height * 4;
-    let inner_w = width * 2;
+    let inner_h = height * 4; let inner_w = width * 2;
     let mut grid = vec![vec![false; inner_w]; inner_h];
+    let continents: &[&[(f64, f64)]] = &[
+        &[(-130.0, 70.0), (-60.0, 70.0), (-50.0, 45.0), (-80.0, 25.0), (-100.0, 20.0), (-130.0, 50.0)],
+        &[(-80.0, 10.0), (-35.0, 10.0), (-40.0, -20.0), (-70.0, -50.0), (-80.0, -10.0)],
+        &[(-10.0, 70.0), (180.0, 70.0), (180.0, 10.0), (100.0, 10.0), (40.0, 30.0), (30.0, 35.0), (10.0, 35.0), (-10.0, 35.0)],
+        &[(-20.0, 35.0), (50.0, 35.0), (50.0, -35.0), (20.0, -35.0), (-20.0, 10.0)],
+        &[(110.0, -10.0), (155.0, -10.0), (155.0, -40.0), (110.0, -40.0)],
+    ];
     for row in 0..inner_h {
         for col in 0..inner_w {
             let lon = -180.0 + (col as f64 / inner_w as f64) * 360.0;
             let lat = 90.0 - (row as f64 / inner_h as f64) * 180.0;
-            for poly in CONTINENTS {
-                if point_in_polygon(lon, lat, poly) { grid[row][col] = true; break; }
-            }
-        }
-    }
-    let braille_base = 0x2800;
-    let dot_offsets = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
-    let mut braille_lines: Vec<Line> = Vec::with_capacity(height);
-    for row in 0..height {
-        let mut spans = Vec::with_capacity(width);
-        for col in 0..width {
-            let mut char_val = braille_base;
-            for r in 0..4 {
-                for c in 0..2 {
-                    let inner_r = row * 4 + r;
-                    let inner_c = col * 2 + c;
-                    if inner_r < inner_h && inner_c < inner_w && grid[inner_r][inner_c] { char_val |= dot_offsets[r][c]; }
+            for poly in continents {
+                let mut inside = false;
+                let n = poly.len();
+                for i in 0..n {
+                    let j = (i + 1) % n;
+                    let (xi, yi) = poly[i]; let (xj, yj) = poly[j];
+                    let intersect = ((yi > lat) != (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+                    if intersect { inside = !inside; }
                 }
+                if inside { grid[row][col] = true; break; }
             }
-            let ch = char::from_u32(char_val).unwrap_or(' ');
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(Color::DarkGray)));
         }
-        braille_lines.push(Line::from(spans));
     }
+    
+    // Robust marker grid to prevent index out of bounds
+    let mut marker_grid: Vec<Vec<Option<(&'static str, Color)>>> = vec![vec![None; width]; height];
     for domain in domains {
         let lat_norm = ((domain.lat + 90.0) / 180.0).clamp(0.0, 1.0);
         let row = ((1.0 - lat_norm) * (height as f64 - 1.0)) as usize;
         let lon_norm = ((domain.lon + 180.0) / 360.0).clamp(0.0, 1.0);
         let col = (lon_norm * (width as f64 - 1.0)) as usize;
         if row < height && col < width {
-            braille_lines[row].spans[col] = Span::styled(domain.risk.marker().to_string(), Style::default().fg(domain.risk.color()).add_modifier(Modifier::BOLD));
+            marker_grid[row][col] = Some((domain.risk.marker(), domain.risk.color()));
         }
     }
-    f.render_widget(Paragraph::new(braille_lines).block(Block::default().borders(Borders::ALL).title(" TACTICAL THREAT MAP ")).wrap(Wrap { trim: false }), area);
+
+    let braille_base = 0x2800;
+    let dot_offsets = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+    let mut braille_lines: Vec<Line> = Vec::with_capacity(height);
+    for row in 0..height {
+        let mut spans = Vec::with_capacity(width);
+        for col in 0..width {
+            if let Some((marker, color)) = marker_grid[row][col] {
+                spans.push(Span::styled(marker.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)));
+            } else {
+                let inner_r = row * 4;
+                let inner_c = col * 2;
+                let mut char_val = braille_base;
+                for r in 0..4 { 
+                    for c in 0..2 {
+                        let check_r = inner_r + r; let check_c = inner_c + c;
+                        if check_r < inner_h && check_c < inner_w && grid[check_r][check_c] { char_val |= dot_offsets[r][c]; }
+                    }
+                }
+                let ch = char::from_u32(char_val).unwrap_or(' ');
+                spans.push(Span::styled(ch.to_string(), Style::default().fg(Color::DarkGray)));
+            }
+        }
+        braille_lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(braille_lines).block(Block::default().borders(Borders::ALL).title(" DATA SOVEREIGNTY MAP ")).wrap(Wrap { trim: false }), area);
 }
 
 fn render_safemode_manager(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default().direction(Direction::Vertical).margin(1).constraints([Constraint::Length(3), Constraint::Min(10), Constraint::Length(3)]).split(f.size());
     let mode_str = match app.ruleset_mode { RulesetMode::Workspace => "Workspace", RulesetMode::Global => "Global" };
-    f.render_widget(Paragraph::new(format!(" [A]dd  [R]emove  [C]opy  [+/-]Move  [E]nable  [D]isable  [T]est  [Enter]Edit  [TAB] {}  [Esc] Back ", mode_str)).block(Block::default().borders(Borders::ALL).title(" - Safe mode manager - ")).style(Style::default().fg(Color::Cyan)), chunks[0]);
+    // UPDATED UI TEXT TO INCLUDE [W]rite Blocklist
+    let top_text = format!(" [A]dd [R]emove [+/-]Move [E]nable [D]isable [W]rite Blocklist [TAB] {} [Esc] Back ", mode_str);
+    f.render_widget(Paragraph::new(top_text).block(Block::default().borders(Borders::ALL).title(" - Safe mode manager - ")).style(Style::default().fg(Color::Cyan)), chunks[0]);
     let header_cells = ["#", "Category", "Rules (Condition)", "Action", "Dist", "B/W", "Mode"].iter().map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     let header = Row::new(header_cells).style(Style::default().bg(Color::DarkGray)).height(1);
     let rows: Vec<Row> = app.rules.iter().enumerate().map(|(i, rule)| {
@@ -384,7 +385,7 @@ fn render_tag_popup(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
     if let Some(domain) = app.selected_domain() {
         let current_tag = domain.tag.marker();
-        let content = format!("Setting tag for: {}\nCurrent Tag: {}\n\n[S] Safe (Verified legitimate)\n[M] Malicious (Confirmed threat)\n[I] Investigate (Needs more research)\n[C] Clear (Remove tag)\n\nPress Q or Esc to cancel.", domain.name, if current_tag.is_empty() { "None" } else { current_tag });
+        let content = format!("Setting tag for: {}\nCurrent Tag: {}\n\n[S] Safe\n[M] Malicious\n[I] Investigate\n[C] Clear\n\nPress Q/Esc to cancel.", domain.name, if current_tag.is_empty() { "None" } else { current_tag });
         f.render_widget(Paragraph::new(content).block(Block::default().borders(Borders::ALL).title(" TAG DOMAIN ").border_style(Style::default().fg(Color::Cyan))).style(Style::default().fg(Color::White)).wrap(Wrap { trim: true }), area);
     }
 }
@@ -401,7 +402,7 @@ fn render_dossier_popup(f: &mut Frame, app: &mut App) {
         }
         details.push_str("INTELLIGENCE:\n");
         details.push_str(&domain.details);
-        f.render_widget(Paragraph::new(details).block(Block::default().borders(Borders::ALL).title(format!(" DOSSIER: {} (Enter/Esc to close) ", domain.name)).border_style(Style::default().fg(domain.risk.color()))).style(Style::default().fg(Color::Gray)).wrap(Wrap { trim: true }), area);
+        f.render_widget(Paragraph::new(details).block(Block::default().borders(Borders::ALL).title(format!(" DOSSIER: {} (Enter/Esc) ", domain.name)).border_style(Style::default().fg(domain.risk.color()))).style(Style::default().fg(Color::Gray)).wrap(Wrap { trim: true }), area);
     }
 }
 
@@ -418,7 +419,7 @@ fn render_test_result_popup(f: &mut Frame, app: &mut App) {
         else { results.push_str(&format!(" [ ] PASSED:    {}\n", rule.category)); }
     }
     results.push_str(&format!("\nResult: {} rules triggered.", triggered_count));
-    f.render_widget(Paragraph::new(results).block(Block::default().borders(Borders::ALL).title(" SAFE MODE TEST RESULT (Enter/Esc to close) ").border_style(Style::default().fg(Color::Cyan))).style(Style::default().fg(Color::White)).wrap(Wrap { trim: true }), area);
+    f.render_widget(Paragraph::new(results).block(Block::default().borders(Borders::ALL).title(" SAFE MODE TEST RESULT (Enter/Esc) ").border_style(Style::default().fg(Color::Cyan))).style(Style::default().fg(Color::White)).wrap(Wrap { trim: true }), area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

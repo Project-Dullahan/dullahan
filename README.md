@@ -1,84 +1,46 @@
-<<<<<<< HEAD
-# adweight
+# 🛡️ Dullahan
 
-A small command-line tool that scans a webpage and reports how much of its
-total download weight comes from known ad/tracking networks versus
-everything else on the page.
+**An open-source, air-gapped, memory-safe endpoint defense suite designed for humanitarian aid workers, journalists, and civilians in contested or communications-denied environments.**
 
-```
-adweight https://example.com
-```
+[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-## What this actually does (v1)
+## 🎯 The Problem
+In modern conflict zones, digital data leaks directly translate to physical, kinetic threats. Adversaries use automated scripts to scrape un-scrubbed metadata from photos, hijack local DNS to route aid workers to phishing clones, and use forensic extraction tools at checkpoints to find hidden browser history fragments. 
 
-- Fetches the page's HTML.
-- Finds every linked resource (`<script src>`, `<img src>`, `<iframe src>`,
-  stylesheets).
-- Checks each resource's domain against a small built-in list of known
-  ad/tracking networks (Google ad services, Facebook's tracking pixel,
-  Criteo, Taboola, Outbrain, and a couple dozen others — see
-  `KNOWN_AD_TRACKER_DOMAINS` in `src/main.rs`).
-- Measures the real byte size of each resource and reports:
-  - total page weight
-  - how much of that weight is from known ad/tracker domains
-  - the percentage that represents
+Traditional corporate security tools (like Windows Defender or cloud-based EDR) fail in these environments because they rely on continuous internet connectivity, emit radio frequency (RF) signatures, and send telemetry to the cloud.
 
-It is **read-only**. It does not block, remove, or rewrite anything on the
-page — it just measures and reports.
+## 💡 The Solution
+**Dullahan** is a 100% offline-first, zero-telemetry defensive utility written in memory-safe Rust. It operates entirely on local artifacts, requiring no active network sockets. It automates the discipline that humans lose under stress, acting as a silent guardian against the most common, lethal digital mistakes in the field.
 
-## What this does *not* do, on purpose
+## 🚀 Core Features
 
-- **It doesn't reduce data center energy use or "pollution" in any
-  measurable way.** Ad/tracker weight on the open web is a real but small
-  slice of total internet and data-center load; this tool measures that
-  slice for a single page you point it at. It has no effect at all on the
-  much larger drivers of data center energy consumption (AI training and
-  inference workloads), which is a hardware/power/cooling problem, not a
-  web-page-weight problem.
-- **It doesn't touch anyone's ad revenue.** It reads what's already public
-  on a page you choose to fetch; it doesn't call any ad network's API and
-  doesn't require (or have) anyone's permission or account access.
-- **The domain list is small and illustrative, not exhaustive.** A serious
-  v2 would load a maintained blocklist (e.g., something derived from
-  EasyList/EasyPrivacy) instead of ~30 hardcoded domains.
-- **It's not an ad blocker.** For blocking ads in your own browser, existing
-  mature tools (uBlock Origin, Pi-hole, etc.) already do this well and are
-  the right choice today.
+### 1. Air-Gapped EXIF Metadata Sanitizer (`metadata.rs`)
+- **The Threat:** Field workers uploading "proof of work" photos that silently contain raw GPS coordinates in the headers, leading to artillery/drone targeting.
+- **The Fix:** A deterministic, zero-dependency byte-stream parser that reads local image files offline, instantly flagging or stripping `GPSLatitude`, `GPSLongitude`, and hardware identifiers before the file can be transmitted.
 
-## Honest use case
+### 2. Sandbox Forensic Ledger Auditor (`forensics.rs`)
+- **The Threat:** Physical checkpoint seizures where adversaries use forensic tools to read hidden SQLite database fragments (like Firefox `places.sqlite` or Chrome `History`), proving the user visited unauthorized aid or news portals.
+- **The Fix:** A multi-platform parser that safely mirrors locked browser databases to temporary memory, bypassing OS write-locks to scan for lingering traces of high-risk domains, giving the user a 2-second "go/no-go" sanity check before a physical search.
 
-This is a **measurement/reporting tool** — useful for a website owner or
-developer who wants a quick, concrete number for how much of their own
-page's weight comes from third-party ad/tracking scripts, as a starting
-point for a performance conversation (page speed affects both user
-experience and search ranking). It is not a fix for climate change, data
-center energy use, or ocean health, and shouldn't be described as one.
+### 3. Data Sovereignty & Baseline Verification (`main.rs`)
+- **The Threat:** Local ISP or cellular tower hijacking (MITM) routing legitimate aid portals to cloned adversary servers.
+- **The Fix:** A terminal-based interface that cross-references local environmental footprints against a cryptographically trusted `baseline.json` manifest, brought across borders via physical media (Sneakernet). If the observed IP or SSL certificate hash deviates, it triggers an immediate air-gap warning.
 
-## Build
+## 📦 Installation & Usage
 
-Requires Rust (edition 2021 toolchain; developed against rustc 1.75).
+Dullahan compiles to a single, standalone, dependency-free binary.
 
-```
+```bash
+# Clone the repository
+git clone https://github.com/Project-Dullahan/dullahan.git
+cd dullahan
+
+# Build the release binaries
 cargo build --release
-./target/release/adweight https://example.com
-```
 
-## Possible next steps
+# Run the forensic history scanner (checks local browser sandboxes)
+cargo run --release --bin audit_history
 
-- Swap the hardcoded domain list for a real, maintained blocklist file.
-- Add a `--json` output mode for scripting/CI use.
-- Add a browser-extension or WordPress-plugin front end that runs this
-  same measurement for a site owner automatically, rather than requiring
-  manual CLI use.
-- Add lazy-loading suggestions (a legitimate, well-established performance
-  technique) for detected ad/tracker scripts, rather than removing them.
-
-## License
-
-Not yet chosen — decide this once you know how you want others to be able
-to use/modify/redistribute it. MIT or Apache-2.0 are the common defaults
-for a small open-source CLI tool like this if you want permissive reuse.
-=======
-# dullahan
-A lightweight, air-gapped, terminal-based threat intelligence suite for defensive security and humanitarian use.
->>>>>>> origin/main
+# Run the interactive TUI dashboard (requires a local correlation report)
+./target/release/tui --input infra_correlation_report.json
