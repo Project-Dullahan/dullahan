@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 // ==========================================
-// 1. HEURISTIC AI CLASSIFIER (Zero-Day Catcher)
+// 1. HEURISTIC RISK CLASSIFIER (Zero-Day Catcher)
 // ==========================================
-pub struct HeuristicAIClassifier {
+pub struct HeuristicRiskClassifier {
     risk_keywords: HashSet<String>,
 }
 
-impl HeuristicAIClassifier {
+impl HeuristicRiskClassifier {
     pub fn new() -> Self {
         let mut risk_keywords = HashSet::new();
         // Terms frequently leveraged in targeted NGO/humanitarian phishing scripts
@@ -183,7 +183,7 @@ fn main() {
 
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("dullahan");
     let threat_db = ThreatIntelDatabase::load_from_config(&config_dir);
-    let ai_sentinel = HeuristicAIClassifier::new();
+    let risk_classifier = HeuristicRiskClassifier::new();
 
     let mut total_suspicious = Vec::new();
 
@@ -218,11 +218,11 @@ fn main() {
                                 println!("  [🚨] INSTANT DATABASE MATCH: {} (Visited {} times)", domain, count);
                                 total_suspicious.push(format!("KNOWN THREAT: {} ({} visits)", domain, count));
                             } 
-                            // Layer 2: Heuristic AI Anomaly Detection
-                            else {
-                                let risk_score = ai_sentinel.assess_sovereignty_risk(&domain);
-                                if risk_score >= 5.0 {
-                                    println!("  [⚠️] HEURISTIC AI ALERT: Unknown domain '{}' flagged with high anomaly score ({:.1}/10)", domain, risk_score);
+                            // Layer 2: Heuristic anomaly detection (entropy + keyword scoring)
+                             else {
+                   let risk_score = risk_classifier.assess_sovereignty_risk(&domain);
+                   if risk_score >= 5.0 {
+        println!("  [⚠️] HEURISTIC ALERT: Unknown domain '{}' flagged with high anomaly score ({:.1}/10)", domain, risk_score);
                                     total_suspicious.push(format!("HEURISTIC FLAG: {} (Score: {:.1}, {} visits)", domain, risk_score, count));
                                 }
                             }
