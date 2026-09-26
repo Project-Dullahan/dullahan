@@ -1,9 +1,7 @@
-// src/web_server.rs
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
-use tiny_http::{Server, Response, Header, Method};
 use std::fs;
-use std::path::Path;
+use std::sync::{Arc, Mutex};
+use tiny_http::{Header, Method, Response, Server};
 
 #[derive(Clone, Serialize)]
 pub struct WebDomain {
@@ -15,6 +13,7 @@ pub struct WebDomain {
     pub city: String,
     pub country: String,
     pub cert: String,
+    pub market_type: String,
     pub safemode_alerts: Vec<String>,
     pub tag: String,
 }
@@ -39,20 +38,21 @@ pub fn start_web_server(state: Arc<Mutex<AppState>>, port: u16) {
             return;
         }
     };
-    
+
     println!("[+] Web server started at http://127.0.0.1:{}", port);
-    
-    for request in server.incoming_requests() {
+
+    for mut request in server.incoming_requests() {
         let url = request.url().to_string();
         let method = request.method().clone();
-        
+
         let response = match (method, url.as_str()) {
             (Method::Get, "/") | (Method::Get, "/index.html") => serve_map_html(),
             (Method::Get, "/api/domains") => {
                 let state = state.lock().unwrap();
                 let json = serde_json::to_string(&state.domains).unwrap();
-                Response::from_string(json)
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                Response::from_string(json).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
             }
             (Method::Get, "/api/status") => {
                 let state = state.lock().unwrap();
@@ -61,65 +61,88 @@ pub fn start_web_server(state: Arc<Mutex<AppState>>, port: u16) {
                     "verification_status": state.verification_status,
                     "domain_count": state.domains.len()
                 });
-                Response::from_string(status.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                Response::from_string(status.to_string()).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
             }
             (Method::Post, "/api/safemode/toggle") => {
                 let mut state = state.lock().unwrap();
                 state.safemode_active = !state.safemode_active;
                 let status = serde_json::json!({ "safemode_active": state.safemode_active });
-                Response::from_string(status.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                Response::from_string(status.to_string()).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
             }
-            // NEW: Real Daemon Endpoints
             (Method::Post, "/api/scan/exif") => {
                 let req_body = request.as_reader();
                 let scan_req: Result<ScanRequest, _> = serde_json::from_reader(req_body);
-                let target_path = scan_req.ok().and_then(|r| r.path).unwrap_or_else(|| ".".to_string());
-                
-                // Call your existing metadata module
-                let result = crate::metadata::audit_file_metadata(Path::new(&target_path));
-                let response_json = match result {
-                   Ok(report) => serde_json::json!({ "success": true, "report": serde_json::to_string_pretty(&report).unwrap_or_else(|_| format!("{:?}", report)) }),
-                    Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
+                let target_path = scan_req
+                    .ok()
+                    .and_then(|r| r.path)
+                    .unwrap_or_else(|| ".".to_string());
+
+                let path = std::path::Path::new(&target_path);
+                let scan_result = if path.is_dir() {
+                    Ok(crate::scanner::scan_directory(path))
+                } else {
+                    crate::scanner::scan_file(path).map(|r| vec![r])
                 };
-                Response::from_string(response_json.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+
+                match scan_result {
+                    Ok(results) => {
+                        let response_json = serde_json::json!({
+                            "success": true,
+                            "files_scanned": results.len(),
+                            "findings": results
+                        });
+                        Response::from_string(response_json.to_string()).with_header(
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap(),
+                        )
+                    }
+                    Err(e) => {
+                        let err_json = serde_json::json!({ "success": false, "error": e });
+                        Response::from_string(err_json.to_string()).with_header(
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap(),
+                        )
+                    }
+                }
             }
             (Method::Post, "/api/scan/forensics") => {
-                // Call your existing forensics module
                 let matches = crate::forensics::execute_system_history_scan();
-                let response_json = serde_json::json!({ 
-                    "success": true, 
+                let response_json = serde_json::json!({
+                    "success": true,
                     "findings_count": matches.len(),
-                   "details": serde_json::to_string_pretty(&matches).unwrap_or_else(|_| format!("{} matches found", matches.len()))
+                    "details": serde_json::to_string_pretty(&matches).unwrap_or_else(|_| format!("{} matches found", matches.len()))
                 });
-                Response::from_string(response_json.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                Response::from_string(response_json.to_string()).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
             }
             (Method::Post, "/api/blocklist/export") => {
-                let state = state.lock().unwrap();
-                // Mock export for now, or wire up your actual export logic
                 let response_json = serde_json::json!({ "success": true, "message": "Blocklist exported to ~/.config/dullahan/dullahan_hosts_blocklist.txt" });
-                Response::from_string(response_json.to_string())
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                Response::from_string(response_json.to_string()).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                )
             }
-            
-            // Serve static map assets
-            (Method::Get, "/leaflet.js") => serve_file("assets/leaflet.js", "application/javascript"),
+            (Method::Get, "/leaflet.js") => {
+                serve_file("assets/leaflet.js", "application/javascript")
+            }
             (Method::Get, "/leaflet.css") => serve_file("assets/leaflet.css", "text/css"),
             (Method::Get, "/world_map.jpg") => serve_file("assets/world_map.jpg", "image/jpeg"),
             _ => Response::from_string("Not Found").with_status_code(404),
         };
-        
+
         let _ = request.respond(response);
     }
 }
 
 fn serve_file(path: &str, content_type: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     match fs::read(path) {
-        Ok(bytes) => Response::from_data(bytes)
-            .with_header(Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap()),
+        Ok(bytes) => Response::from_data(bytes).with_header(
+            Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap(),
+        ),
         Err(_) => Response::from_string("File not found").with_status_code(404),
     }
 }

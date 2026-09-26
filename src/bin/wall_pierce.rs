@@ -29,12 +29,14 @@ fn main() {
 
     let scheme = parsed_url.scheme();
     let host = parsed_url.host_str().unwrap_or("unknown");
-    let port = parsed_url.port().unwrap_or(if scheme == "https" { 443 } else { 80 });
+    let port = parsed_url
+        .port()
+        .unwrap_or(if scheme == "https" { 443 } else { 80 });
 
     // --- PHASE 1: TLS Certificate Audit (HTTPS only) ---
     if scheme == "https" {
         println!("--- PHASE 1: TLS Certificate Analysis ---");
-        
+
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
@@ -58,7 +60,7 @@ fn main() {
         };
 
         let mut conn = ClientConnection::new(Arc::new(config), server_name).unwrap();
-        
+
         // Resolve address for connect_timeout
         let addr_str = format!("{}:{}", host, port);
         let sock_addr = match addr_str.to_socket_addrs() {
@@ -88,17 +90,21 @@ fn main() {
                                 let subject = cert.subject().to_string();
                                 let issuer = cert.issuer().to_string();
                                 let validity = cert.validity();
-                                
+
                                 println!("  [INFO] Subject: {}", subject);
                                 println!("  [INFO] Issuer: {}", issuer);
                                 println!("  [INFO] Valid From: {}", validity.not_before);
                                 println!("  [INFO] Valid Until: {}", validity.not_after);
 
-                                if issuer.to_lowercase().contains("self-signed") || issuer.len() < 20 {
+                                if issuer.to_lowercase().contains("self-signed")
+                                    || issuer.len() < 20
+                                {
                                     println!("  [WARNING] Certificate appears to be self-signed or from an untrusted local CA.");
                                 }
                             }
-                            Err(e) => println!("  [FAIL] Could not parse X.509 certificate. ({:?})", e),
+                            Err(e) => {
+                                println!("  [FAIL] Could not parse X.509 certificate. ({:?})", e)
+                            }
                         }
                     }
                 } else {
@@ -110,13 +116,15 @@ fn main() {
         println!();
     } else {
         println!("--- PHASE 1: TLS Certificate Analysis ---");
-        println!("  [WARNING] Target uses HTTP. Traffic is unencrypted and vulnerable to interception.");
+        println!(
+            "  [WARNING] Target uses HTTP. Traffic is unencrypted and vulnerable to interception."
+        );
         println!();
     }
 
     // --- PHASE 2: HTTP Security Header Audit ---
     println!("--- PHASE 2: HTTP Security Header Analysis ---");
-    
+
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) Dullahan/0.1 Security Audit")
@@ -127,12 +135,21 @@ fn main() {
         Ok(resp) => {
             let headers = resp.headers();
             let mut missing_count = 0;
-            
+
             let checks = [
-                ("content-security-policy", "Content-Security-Policy (CSP) - Prevents XSS/Injection"),
-                ("strict-transport-security", "Strict-Transport-Security (HSTS) - Enforces HTTPS"),
+                (
+                    "content-security-policy",
+                    "Content-Security-Policy (CSP) - Prevents XSS/Injection",
+                ),
+                (
+                    "strict-transport-security",
+                    "Strict-Transport-Security (HSTS) - Enforces HTTPS",
+                ),
                 ("x-frame-options", "X-Frame-Options - Prevents Clickjacking"),
-                ("x-content-type-options", "X-Content-Type-Options - Prevents MIME-sniffing"),
+                (
+                    "x-content-type-options",
+                    "X-Content-Type-Options - Prevents MIME-sniffing",
+                ),
             ];
 
             for (header_key, description) in checks {
@@ -144,13 +161,19 @@ fn main() {
                 }
             }
 
-            println!("\n[SUMMARY] {} of 4 critical security headers are missing.", missing_count);
+            println!(
+                "\n[SUMMARY] {} of 4 critical security headers are missing.",
+                missing_count
+            );
             if missing_count >= 3 {
                 println!("[WARNING] Target has a severely degraded security posture.");
             }
         }
-        Err(e) => eprintln!("Error: Failed to connect to target for header audit. ({})", e),
+        Err(e) => eprintln!(
+            "Error: Failed to connect to target for header audit. ({})",
+            e
+        ),
     }
-    
+
     println!("\n[INFO] Audit complete.");
 }

@@ -1,6 +1,5 @@
 // src/bin/map.rs
 use base64::{engine::general_purpose, Engine as _};
-use dirs;
 use maxminddb::geoip2::City;
 use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
@@ -44,13 +43,16 @@ fn main() {
     let reader = Reader::from_source(MAXMIND_DB).expect("Failed to load embedded MaxMind DB");
 
     println!("[*] Parsing embedded baseline.json...");
-    let baseline: BaselineConfig = serde_json::from_str(BASELINE_JSON).expect("Failed to parse baseline");
+    let baseline: BaselineConfig =
+        serde_json::from_str(BASELINE_JSON).expect("Failed to parse baseline");
 
     // Check if the TUI passed a filter file
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("dullahan");
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("dullahan");
     let filter_path = config_dir.join("map_filter.txt");
     let mut target_domains: Option<HashSet<String>> = None;
-    
+
     if filter_path.exists() {
         println!("[*] Detected TUI filter. Mapping only selected domains...");
         if let Ok(content) = fs::read_to_string(&filter_path) {
@@ -82,14 +84,16 @@ fn main() {
                     let loc = city.location.as_ref();
                     let lat = loc.and_then(|l| l.latitude).unwrap_or(0.0);
                     let lon = loc.and_then(|l| l.longitude).unwrap_or(0.0);
-                    
-                    let city_name = city.city
+
+                    let city_name = city
+                        .city
                         .as_ref()
                         .and_then(|c| c.names.as_ref())
                         .and_then(|n| n.get("en").map(|s| s.to_string()))
                         .unwrap_or_else(|| "Unknown".to_string());
-                        
-                    let country_name = city.country
+
+                    let country_name = city
+                        .country
                         .as_ref()
                         .and_then(|c| c.names.as_ref())
                         .and_then(|n| n.get("en").map(|s| s.to_string()))
@@ -102,7 +106,8 @@ fn main() {
                         lon,
                         city: city_name,
                         country: country_name,
-                        cert: profile.expected_cert_sha256
+                        cert: profile
+                            .expected_cert_sha256
                             .as_deref()
                             .map(|s| s.chars().take(16).collect::<String>() + "...")
                             .unwrap_or_else(|| "Unknown".to_string()),
@@ -119,7 +124,8 @@ fn main() {
     let nodes_json = serde_json::to_string(&nodes).unwrap();
 
     println!("[*] Generating self-contained HTML...");
-    let html = format!(r#"<!DOCTYPE html>
+    let html = format!(
+        r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -189,13 +195,13 @@ nodes.forEach(function(n) {{
 </script>
 </body>
 </html>"#,
-    leaflet_css = LEAFLET_CSS,
-    leaflet_js = LEAFLET_JS,
-    generated_at = baseline.generated_at,
-    node_count = nodes.len(),
-    nodes_json = nodes_json,
-    map_data_uri = map_data_uri,
-);
+        leaflet_css = LEAFLET_CSS,
+        leaflet_js = LEAFLET_JS,
+        generated_at = baseline.generated_at,
+        node_count = nodes.len(),
+        nodes_json = nodes_json,
+        map_data_uri = map_data_uri,
+    );
 
     fs::write("dullahan_map.html", html).expect("Failed to write map file");
     println!("[+] SUCCESS: Generated fully self-contained 'dullahan_map.html'");

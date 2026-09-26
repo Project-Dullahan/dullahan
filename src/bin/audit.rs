@@ -29,7 +29,7 @@ fn audit_file_metadata(file_path: &str) -> Result<AuditReport, Box<dyn std::erro
 
     let file = fs::File::open(path)?;
     let mut bufreader = std::io::BufReader::new(file);
-    
+
     // The correct kamadak-exif API
     if let Ok(exif) = Reader::new().read_from_container(&mut bufreader) {
         for field in exif.fields() {
@@ -41,14 +41,22 @@ fn audit_file_metadata(file_path: &str) -> Result<AuditReport, Box<dyn std::erro
                     if !current_coords.is_empty() {
                         current_coords.push_str(", ");
                     }
-                    current_coords.push_str(&format!("{}: {}", field.tag, field.display_value().with_unit(&exif)));
+                    current_coords.push_str(&format!(
+                        "{}: {}",
+                        field.tag,
+                        field.display_value().with_unit(&exif)
+                    ));
                 }
                 Tag::Model | Tag::Make | Tag::Software => {
                     let info = report.device_info.get_or_insert_with(String::new);
                     if !info.is_empty() {
                         info.push_str(", ");
                     }
-                    info.push_str(&format!("{}: {}", field.tag, field.display_value().with_unit(&exif)));
+                    info.push_str(&format!(
+                        "{}: {}",
+                        field.tag,
+                        field.display_value().with_unit(&exif)
+                    ));
                 }
                 _ => {}
             }
@@ -68,7 +76,10 @@ fn main() {
     }
 
     let target_file = &args[1];
-    println!("[DULLAHAN] Commencing pure offline metadata audit of: {}", target_file);
+    println!(
+        "[DULLAHAN] Commencing pure offline metadata audit of: {}",
+        target_file
+    );
 
     match audit_file_metadata(target_file) {
         Ok(report) => {
@@ -76,11 +87,14 @@ fn main() {
             println!("         METADATA AUDIT REPORT          ");
             println!("========================================");
             println!("File: {}", report.file);
-            
+
             if !report.safe_to_transmit {
                 println!("\n⚠️  CRITICAL WARNING: UNSAFE TO TRANSMIT  ⚠️");
                 if report.gps_found {
-                    println!("  [!] GPS Coordinates Detected: {}", report.coordinates.unwrap_or_default());
+                    println!(
+                        "  [!] GPS Coordinates Detected: {}",
+                        report.coordinates.unwrap_or_default()
+                    );
                 }
             } else {
                 println!("\n✅ SAFE TO TRANSMIT: No sensitive geolocation metadata found.");

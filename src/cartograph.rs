@@ -20,7 +20,11 @@ pub struct DomainIntel {
     pub tracker_count: usize,
 }
 
-pub fn generate_offline_threat_map(intel_data: Vec<DomainIntel>, output_path: &str, geo_db_path: &str) {
+pub fn generate_offline_threat_map(
+    intel_data: Vec<DomainIntel>,
+    output_path: &str,
+    geo_db_path: &str,
+) {
     println!("\n[DULLAHAN] Initiating offline threat landscape mapping...");
 
     if !Path::new(geo_db_path).exists() {
@@ -47,12 +51,14 @@ pub fn generate_offline_threat_map(intel_data: Vec<DomainIntel>, output_path: &s
     for mut intel in intel_data {
         if let Ok(ip) = intel.ip.parse::<IpAddr>() {
             if let Ok(city_data) = reader.lookup::<City>(ip) {
-                let country = city_data.country
+                let country = city_data
+                    .country
                     .and_then(|c| c.names)
                     .and_then(|n| n.get("en").map(|s| s.to_string()))
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                let city = city_data.city
+                let city = city_data
+                    .city
                     .and_then(|c| c.names)
                     .and_then(|n| n.get("en").map(|s| s.to_string()))
                     .unwrap_or_else(|| "Unknown".to_string());
@@ -71,15 +77,32 @@ pub fn generate_offline_threat_map(intel_data: Vec<DomainIntel>, output_path: &s
                         let city_lower = city.to_lowercase();
                         let isp_lower = isp.to_lowercase();
 
-                        let (risk_level, color) = if hostile_countries.iter().any(|&c| country_lower.contains(c)) {
-                            ("HIGH RISK: Hostile Jurisdiction".to_string(), "#ff0033".to_string())
-                        } else if isp_lower.contains("military") || isp_lower.contains("gov") || isp_lower.contains("state") {
-                            ("HIGH RISK: Gov/Military Infra".to_string(), "#ff0033".to_string())
-                        } else if city_lower.contains("ashburn") || city_lower.contains("frankfurt") || city_lower.contains("singapore") || city_lower.contains("dublin") || isp_lower.contains("cloudflare") || isp_lower.contains("akamai") || isp_lower.contains("amazon") {
-                            ("OBFUSCATED (CDN/Cloud)".to_string(), "#ffaa00".to_string())
-                        } else {
-                            ("NEUTRAL".to_string(), "#00ff41".to_string())
-                        };
+                        let (risk_level, color) =
+                            if hostile_countries.iter().any(|&c| country_lower.contains(c)) {
+                                (
+                                    "HIGH RISK: Hostile Jurisdiction".to_string(),
+                                    "#ff0033".to_string(),
+                                )
+                            } else if isp_lower.contains("military")
+                                || isp_lower.contains("gov")
+                                || isp_lower.contains("state")
+                            {
+                                (
+                                    "HIGH RISK: Gov/Military Infra".to_string(),
+                                    "#ff0033".to_string(),
+                                )
+                            } else if city_lower.contains("ashburn")
+                                || city_lower.contains("frankfurt")
+                                || city_lower.contains("singapore")
+                                || city_lower.contains("dublin")
+                                || isp_lower.contains("cloudflare")
+                                || isp_lower.contains("akamai")
+                                || isp_lower.contains("amazon")
+                            {
+                                ("OBFUSCATED (CDN/Cloud)".to_string(), "#ffaa00".to_string())
+                            } else {
+                                ("NEUTRAL".to_string(), "#00ff41".to_string())
+                            };
 
                         intel.risk_level = risk_level;
                         intel.color = color;
@@ -132,11 +155,17 @@ fn generate_dashboard_html(markers: &[DomainIntel]) -> String {
         let header_status = if m.missing_headers.is_empty() {
             "<span style=\"color: #00ff41;\">[SECURE]</span>".to_string()
         } else {
-            format!("<span style=\"color: #ff0033;\">[MISSING: {}]</span>", m.missing_headers.join(", "))
+            format!(
+                "<span style=\"color: #ff0033;\">[MISSING: {}]</span>",
+                m.missing_headers.join(", ")
+            )
         };
 
         let tracker_status = if m.tracker_count > 0 {
-            format!("<span style=\"color: #ffaa00;\">[{} DETECTED]</span>", m.tracker_count)
+            format!(
+                "<span style=\"color: #ffaa00;\">[{} DETECTED]</span>",
+                m.tracker_count
+            )
         } else {
             "<span style=\"color: #00ff41;\">[NONE]</span>".to_string()
         };

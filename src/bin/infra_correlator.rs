@@ -1,18 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use reqwest::blocking::Client;
+use rustls::{ClientConfig, ClientConnection, ServerName};
+use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
-use trust_dns_resolver::Resolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use reqwest::blocking::Client;
-use rustls::{ClientConfig, ClientConnection, ServerName};
+use trust_dns_resolver::Resolver;
 use webpki_roots::TLS_SERVER_ROOTS;
 use x509_parser::prelude::*;
-use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 struct DomainIntel {
@@ -45,7 +45,8 @@ fn main() {
 
     let file_path = &args[1];
     let domains: Vec<String> = match fs::read_to_string(file_path) {
-        Ok(content) => content.lines()
+        Ok(content) => content
+            .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect(),
@@ -90,15 +91,18 @@ fn main() {
 
         // FIX 3: No longer silently swallowing errors
         match fetch_certificate(domain) {
-            Ok(cert_info) => { 
-                intel.cert_subject = cert_info.0; 
-                intel.cert_issuer = cert_info.1; 
+            Ok(cert_info) => {
+                intel.cert_subject = cert_info.0;
+                intel.cert_issuer = cert_info.1;
             }
             Err(e) => println!("    (certificate check failed: {})", e),
         }
 
-        if let Ok(html) = client.get(format!("http://{}", domain)).send()
-            .and_then(|r| r.text()) {
+        if let Ok(html) = client
+            .get(format!("http://{}", domain))
+            .send()
+            .and_then(|r| r.text())
+        {
             intel.tracking_ids = extract_tracking_ids(&html);
             intel.html_fingerprint = Some(compute_html_fingerprint(&html));
         }
@@ -114,7 +118,9 @@ fn main() {
 }
 
 // FIX 1 & 2: Proper hostname resolution and rustls handshake driving
-fn fetch_certificate(domain: &str) -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
+fn fetch_certificate(
+    domain: &str,
+) -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add_trust_anchors(TLS_SERVER_ROOTS.iter().map(|ta| {
         rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
@@ -134,7 +140,10 @@ fn fetch_certificate(domain: &str) -> Result<(Option<String>, Option<String>), B
 
     let addr = format!("{}:443", domain);
     // FIX 2: to_socket_addrs resolves hostnames, parse() only works for literal IPs
-    let sock_addr = addr.to_socket_addrs()?.next().ok_or("DNS resolution returned no addresses")?;
+    let sock_addr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or("DNS resolution returned no addresses")?;
     let mut sock = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(5))?;
     let _tls = rustls::Stream::new(&mut conn, &mut sock);
 
@@ -164,12 +173,12 @@ fn extract_tracking_ids(html: &str) -> HashSet<String> {
     // Google Analytics
     while let Some(pos) = cursor.find("G-") {
         if pos + 12 <= cursor.len() {
-            let potential_id = &cursor[pos..pos+12];
+            let potential_id = &cursor[pos..pos + 12];
             if potential_id.chars().skip(2).all(|c| c.is_alphanumeric()) {
                 ids.insert(format!("GA:{}", potential_id));
             }
         }
-        cursor = &cursor[pos+2..];
+        cursor = &cursor[pos + 2..];
     }
 
     // Facebook Pixel
@@ -177,7 +186,7 @@ fn extract_tracking_ids(html: &str) -> HashSet<String> {
     while let Some(pos) = cursor.find("fbq('init', '") {
         let start = pos + 14;
         if start + 15 <= cursor.len() {
-            let segment = &cursor[start..start+15];
+            let segment = &cursor[start..start + 15];
             if segment.chars().all(|c| c.is_numeric()) {
                 ids.insert(format!("FB:{}", segment));
             }
@@ -191,12 +200,12 @@ fn extract_tracking_ids(html: &str) -> HashSet<String> {
 // FIX 4: Real cryptographic hash instead of length arithmetic
 fn compute_html_fingerprint(html: &str) -> String {
     let mut fingerprint = String::new();
-    
+
     for line in html.lines() {
         if line.contains("<script") && line.contains("src=") {
             if let Some(start) = line.find("src=\"") {
-                if let Some(end) = line[start+5..].find("\"") {
-                    let src = &line[start+5..start+5+end];
+                if let Some(end) = line[start + 5..].find("\"") {
+                    let src = &line[start + 5..start + 5 + end];
                     fingerprint.push_str(&format!("SCRIPT:{}|", src));
                 }
             }
@@ -222,7 +231,10 @@ fn perform_correlation(intel_map: &HashMap<String, DomainIntel>) -> Vec<Correlat
     let mut ip_to_domains: HashMap<String, Vec<String>> = HashMap::new();
     for (domain, intel) in intel_map {
         for ip in &intel.ips {
-            ip_to_domains.entry(ip.clone()).or_insert_with(Vec::new).push(domain.clone());
+            ip_to_domains
+                .entry(ip.clone())
+                .or_default()
+                .push(domain.clone());
         }
     }
     for (ip, domains) in ip_to_domains {
@@ -243,7 +255,10 @@ fn perform_correlation(intel_map: &HashMap<String, DomainIntel>) -> Vec<Correlat
     let mut cert_to_domains: HashMap<String, Vec<String>> = HashMap::new();
     for (domain, intel) in intel_map {
         if let Some(ref subject) = intel.cert_subject {
-            cert_to_domains.entry(subject.clone()).or_insert_with(Vec::new).push(domain.clone());
+            cert_to_domains
+                .entry(subject.clone())
+                .or_default()
+                .push(domain.clone());
         }
     }
     for (cert, domains) in cert_to_domains {
@@ -264,7 +279,10 @@ fn perform_correlation(intel_map: &HashMap<String, DomainIntel>) -> Vec<Correlat
     let mut tracking_to_domains: HashMap<String, Vec<String>> = HashMap::new();
     for (domain, intel) in intel_map {
         for tracking_id in &intel.tracking_ids {
-            tracking_to_domains.entry(tracking_id.clone()).or_insert_with(Vec::new).push(domain.clone());
+            tracking_to_domains
+                .entry(tracking_id.clone())
+                .or_default()
+                .push(domain.clone());
         }
     }
     for (tracking_id, domains) in tracking_to_domains {
@@ -285,7 +303,10 @@ fn perform_correlation(intel_map: &HashMap<String, DomainIntel>) -> Vec<Correlat
     let mut fingerprint_to_domains: HashMap<String, Vec<String>> = HashMap::new();
     for (domain, intel) in intel_map {
         if let Some(ref fp) = intel.html_fingerprint {
-            fingerprint_to_domains.entry(fp.clone()).or_insert_with(Vec::new).push(domain.clone());
+            fingerprint_to_domains
+                .entry(fp.clone())
+                .or_default()
+                .push(domain.clone());
         }
     }
     for (fingerprint, domains) in fingerprint_to_domains {
@@ -318,7 +339,10 @@ fn generate_report(clusters: &[CorrelationCluster], intel_map: &HashMap<String, 
 
         for cluster in clusters {
             println!("{}", "-".repeat(80));
-            println!("Cluster #{}: {}", cluster.cluster_id, cluster.correlation_type);
+            println!(
+                "Cluster #{}: {}",
+                cluster.cluster_id, cluster.correlation_type
+            );
             println!("Shared Indicator: {}", cluster.shared_indicator);
             println!("Confidence: {}", cluster.confidence);
             println!("\nRelated Domains:");
@@ -346,7 +370,7 @@ fn generate_report(clusters: &[CorrelationCluster], intel_map: &HashMap<String, 
     });
 
     if let Ok(json) = serde_json::to_string_pretty(&report_data) {
-        if let Ok(_) = fs::write(report_path, json) {
+        if fs::write(report_path, json).is_ok() {
             println!("\nDetailed report exported to: {}", report_path);
         }
     }

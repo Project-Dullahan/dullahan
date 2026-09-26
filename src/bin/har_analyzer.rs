@@ -44,19 +44,21 @@ fn extract_domain(url: &str) -> Option<String> {
 
 fn is_fingerprinting_attempt(url: &str) -> bool {
     let lower = url.to_lowercase();
-    lower.contains("fingerprint") || 
-    lower.contains("canvas") || 
-    lower.contains("webgl") || 
-    lower.contains("audiocontext") ||
-    lower.contains("navigator") ||
-    lower.contains("device-memory")
+    lower.contains("fingerprint")
+        || lower.contains("canvas")
+        || lower.contains("webgl")
+        || lower.contains("audiocontext")
+        || lower.contains("navigator")
+        || lower.contains("device-memory")
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: har_analyzer <captured_traffic.har>");
-        eprintln!("Export a .har file from your browser's DevTools (Network tab -> Save all as HAR)");
+        eprintln!(
+            "Export a .har file from your browser's DevTools (Network tab -> Save all as HAR)"
+        );
         std::process::exit(1);
     }
 
@@ -108,8 +110,13 @@ fn main() {
 
     // Behavioral Flag 1: Tracker Density
     if domain_stats.len() > 15 {
-        println!("[WARNING] HIGH TRACKER DENSITY: Page contacted {} unique domains.", domain_stats.len());
-        println!("          This is unusually high and suggests aggressive third-party tracking.\n");
+        println!(
+            "[WARNING] HIGH TRACKER DENSITY: Page contacted {} unique domains.",
+            domain_stats.len()
+        );
+        println!(
+            "          This is unusually high and suggests aggressive third-party tracking.\n"
+        );
     }
 
     // Behavioral Flag 2: Fingerprinting
@@ -123,7 +130,7 @@ fn main() {
 
     println!("Top Domains by Data Volume & Behavior:");
     let mut sorted_domains: Vec<_> = domain_stats.iter().collect();
-    sorted_domains.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    sorted_domains.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
     for (domain, (bytes, requests, posts)) in sorted_domains.iter().take(15) {
         let mut flags = Vec::new();
@@ -133,14 +140,20 @@ fn main() {
         if fingerprinting_domains.contains(*domain) {
             flags.push("FINGERPRINTING".to_string());
         }
-        
+
         let flag_str = if flags.is_empty() {
             "".to_string()
         } else {
             format!(" [{}]", flags.join(", "))
         };
 
-        println!("  [{:>6} KB] [{:>3} req] {}{}", bytes / 1024, requests, domain, flag_str);
+        println!(
+            "  [{:>6} KB] [{:>3} req] {}{}",
+            bytes / 1024,
+            requests,
+            domain,
+            flag_str
+        );
     }
 
     // Output domains to a file for batch processing by cname_unmask
@@ -148,8 +161,15 @@ fn main() {
     let domains_list: Vec<String> = domain_stats.keys().cloned().collect();
     match fs::write(output_path, domains_list.join("\n")) {
         Ok(_) => {
-            println!("\n[SUCCESS] Extracted {} unique domains to: {}", domain_stats.len(), output_path);
-            println!("[INFO] Next step: ./target/release/cname_unmask {}", output_path);
+            println!(
+                "\n[SUCCESS] Extracted {} unique domains to: {}",
+                domain_stats.len(),
+                output_path
+            );
+            println!(
+                "[INFO] Next step: ./target/release/cname_unmask {}",
+                output_path
+            );
         }
         Err(e) => eprintln!("Error: Could not write extracted domains. ({})", e),
     }

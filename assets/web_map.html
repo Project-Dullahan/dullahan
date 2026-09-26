@@ -25,7 +25,6 @@ body { margin:0; padding:0; background:#0d1117; color:#c9d1d9; font-family:monos
 .domain-item .meta { color:#8b949e; font-size:10px; margin-top:3px; }
 .leaflet-container { background:#0d1117 !important; }
 
-/* Results Modal */
 .modal { display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background-color:rgba(0,0,0,0.8); }
 .modal-content { background-color:#161b22; margin:5% auto; padding:20px; border:1px solid #30363d; border-radius:8px; width:80%; max-width:800px; max-height:80vh; overflow-y:auto; }
 .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; padding-bottom:10px; border-bottom:1px solid #30363d; }
@@ -62,13 +61,11 @@ body { margin:0; padding:0; background:#0d1117; color:#c9d1d9; font-family:monos
       <button class="btn" onclick="toggleSafemode()">Toggle Safe Mode</button>
       <button class="btn danger" onclick="exportBlocklist()">Export Blocklist</button>
     </div>
-    
     <div class="control-panel">
       <h3>🔍 Security Scans</h3>
       <button class="btn" onclick="scanEXIF()">Scan EXIF Metadata</button>
       <button class="btn" onclick="runForensics()">Run Browser Forensics</button>
     </div>
-    
     <div class="control-panel">
       <h3>📡 Tracked Infrastructure</h3>
       <div class="domain-list" id="domain-list">
@@ -78,7 +75,6 @@ body { margin:0; padding:0; background:#0d1117; color:#c9d1d9; font-family:monos
   </div>
 </div>
 
-<!-- Results Modal -->
 <div id="results-modal" class="modal">
   <div class="modal-content">
     <div class="modal-header">
@@ -123,8 +119,8 @@ async function loadDomains() {
                 '<strong>' + domain.name + '</strong><br>' +
                 'IP: ' + domain.ips.join(', ') + '<br>' +
                 'Location: ' + domain.city + ', ' + domain.country + '<br>' +
-                'Risk: ' + domain.risk + '<br>' +
-                'Cert: ' + domain.cert
+                'Market: <span style="color:#ff5555">' + domain.market_type + '</span><br>' +
+                'Risk: ' + domain.risk
             );
             markers.push(marker);
             
@@ -148,7 +144,7 @@ async function loadStatus() {
         const response = await fetch('/api/status');
         const status = await response.json();
         document.getElementById('safemode-status').textContent = '🛡️ SAFE MODE: ' + (status.safemode_active ? 'ACTIVE' : 'OFF');
-        document.getElementById('verification-status').textContent = status.verification_status === 'PASS' ? '🔒 VERIFIED' : '⚠️ UNVERIFIED';
+        document.getElementById('verification-status').textContent = status.verification_status.includes('DNS') ? status.verification_status : (status.verification_status === 'PASS' ? '🔒 VERIFIED' : '⚠️ UNVERIFIED');
     } catch (error) {
         console.error('Failed to load status:', error);
     }
@@ -167,17 +163,11 @@ async function scanEXIF() {
     const btn = event.target;
     btn.textContent = "Scanning...";
     btn.disabled = true;
-    
     try {
-        const response = await fetch('/api/scan/exif', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: "." })
-        });
+        const response = await fetch('/api/scan/exif', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: "." }) });
         const result = await response.json();
-        
         if (result.success) {
-            showModal('EXIF Metadata Scan Results', formatEXIFResults(result.report));
+            showModal('EXIF Metadata Scan Results', '<div class="result-section"><div class="result-item success">' + result.report + '</div></div>');
         } else {
             showModal('EXIF Scan Failed', '<div class="result-item danger">Error: ' + result.error + '</div>');
         }
@@ -193,13 +183,23 @@ async function runForensics() {
     const btn = event.target;
     btn.textContent = "Scanning...";
     btn.disabled = true;
-    
     try {
         const response = await fetch('/api/scan/forensics', { method: 'POST' });
         const result = await response.json();
-        
         if (result.success) {
-            showModal('Browser Forensics Scan Results', formatForensicsResults(result));
+            let html = '<div class="result-section"><h4>Summary</h4><div class="result-item success">Found ' + result.findings_count + ' potential artifacts</div></div>';
+            if (result.details && result.details !== '[]') {
+                html += '<div class="result-section"><h4>Detailed Findings</h4>';
+                try {
+                    const findings = JSON.parse(result.details);
+                    findings.forEach(f => {
+                        const sev = f.severity === 'High' ? 'danger' : f.severity === 'Medium' ? 'warning' : 'success';
+                        html += '<div class="result-item ' + sev + '"><strong>' + (f.browser || 'Unknown') + '</strong><br>Type: ' + (f.type || 'Unknown') + '<br>Path: ' + (f.path || 'N/A') + '</div>';
+                    });
+                } catch (e) { html += '<div class="result-item">' + result.details + '</div>'; }
+                html += '</div>';
+            }
+            showModal('Browser Forensics Scan Results', html);
         }
     } catch (error) {
         showModal('Connection Error', '<div class="result-item danger">Failed to connect to daemon: ' + error + '</div>');
@@ -219,40 +219,6 @@ async function exportBlocklist() {
     }
 }
 
-function formatEXIFResults(report) {
-    let html = '<div class="result-section"><h4>Scan Report</h4>';
-    html += '<div class="result-item success">' + report + '</div>';
-    html += '</div>';
-    return html;
-}
-
-function formatForensicsResults(result) {
-    let html = '<div class="result-section">';
-    html += '<h4>Summary</h4>';
-    html += '<div class="result-item success">Found ' + result.findings_count + ' potential artifacts</div>';
-    html += '</div>';
-    
-    if (result.details && result.details !== '[]') {
-        html += '<div class="result-section"><h4>Detailed Findings</h4>';
-        try {
-            const findings = JSON.parse(result.details);
-            findings.forEach(finding => {
-                const severity = finding.severity === 'High' ? 'danger' : finding.severity === 'Medium' ? 'warning' : 'success';
-                html += '<div class="result-item ' + severity + '">';
-                html += '<strong>' + (finding.browser || 'Unknown Browser') + '</strong><br>';
-                html += 'Type: ' + (finding.type || 'Unknown') + '<br>';
-                html += 'Path: ' + (finding.path || 'N/A');
-                html += '</div>';
-            });
-        } catch (e) {
-            html += '<div class="result-item">' + result.details + '</div>';
-        }
-        html += '</div>';
-    }
-    
-    return html;
-}
-
 function showModal(title, content) {
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').innerHTML = content;
@@ -264,9 +230,8 @@ function closeModal() {
 }
 
 window.onclick = function(event) {
-    const modal = document.getElementById('results-modal');
-    if (event.target === modal) {
-        modal.style.display = 'none';
+    if (event.target === document.getElementById('results-modal')) {
+        closeModal();
     }
 }
 

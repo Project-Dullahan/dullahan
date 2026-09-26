@@ -37,7 +37,7 @@ fn main() {
         let start_time = Instant::now();
         let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3));
         let duration = start_time.elapsed();
-        
+
         match stream {
             Ok(_) => {
                 let ms = duration.as_millis();

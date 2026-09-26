@@ -5,7 +5,7 @@ use rustls::{ClientConfig, RootCertStore, ServerName};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::error::Error;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
@@ -39,9 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let target_domain = &args[1];
 
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("dullahan");
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("dullahan");
     let manifest_path = config_dir.join("baseline.json");
-    
+
     if !manifest_path.exists() {
         eprintln!("[!] CRITICAL: Manifest file missing at {:?}", manifest_path);
         std::process::exit(1);
@@ -54,7 +56,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let profile = match baseline.trusted_profiles.get(target_domain) {
         Some(p) => p.clone(),
         None => {
-            eprintln!("[!] ERROR: Domain '{}' not found in trusted_profiles.", target_domain);
+            eprintln!(
+                "[!] ERROR: Domain '{}' not found in trusted_profiles.",
+                target_domain
+            );
             std::process::exit(1);
         }
     };
@@ -71,9 +76,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let expected_ips: HashSet<String> = profile.resolved_infrastructure.iter().map(|ip| ip.ip.clone()).collect();
+    let expected_ips: HashSet<String> = profile
+        .resolved_infrastructure
+        .iter()
+        .map(|ip| ip.ip.clone())
+        .collect();
     let mutated_ips: Vec<&String> = live_ips.difference(&expected_ips).collect();
-    
+
     let mut ip_warning = false;
     if !mutated_ips.is_empty() {
         println!("[⚠️] WARNING: DNS Shift Detected (New IPs resolved)");
@@ -101,9 +110,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
-    let server_name = ServerName::try_from(profile.domain.as_str())
-        .map_err(|_| "Invalid DNS name")?;
-        
+    let server_name =
+        ServerName::try_from(profile.domain.as_str()).map_err(|_| "Invalid DNS name")?;
+
     let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)?;
     let mut sock = TcpStream::connect(&socket_addr_str)?;
     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
@@ -124,7 +133,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("  Received Hash: {}", actual_hash_hex);
                 std::process::exit(5);
             } else {
-                println!("[+] TLS Pinning Verification: PASS (Certificate matches pre-vetted hash)");
+                println!(
+                    "[+] TLS Pinning Verification: PASS (Certificate matches pre-vetted hash)"
+                );
                 if ip_warning {
                     println!("[✅] VERIFICATION COMPLETE: IP shifted, but cryptographic identity is verified. Likely safe CDN rotation.");
                 } else {
