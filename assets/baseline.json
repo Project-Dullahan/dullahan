@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-09-25T23:03:48.169141+00:00",
+  "trusted_profiles": {
+    "youtube.com": {
+      "domain": "youtube.com",
+      "expected_ips": [
+        "2607:f8b0:400a:800::200e",
+        "142.251.33.206"
+      ],
+      "expected_asn": "AS-UNKNOWN (Verify manually)",
+      "cert_sha256": "fbc141b611f150e5b4ac091c7c4d2848ae900651c98b57a35e14eca87c30f419"
+    }
+  }
+}

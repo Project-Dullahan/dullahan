@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Dullahan - Unified Tactical Interface</title>
+<style>
+body { margin:0; padding:0; background:#0d1117; color:#c9d1d9; font-family:monospace; }
+#header { background:#161b22; padding:10px 20px; border-bottom:1px solid #30363d; display:flex; justify-content:space-between; align-items:center; }
+#header h1 { margin:0; color:#58a6ff; font-size:16px; }
+#header .status { font-size:12px; color:#8b949e; }
+#main { display:flex; height:calc(100vh - 50px); }
+#map { flex:1; background:#0d1117; }
+#sidebar { width:350px; background:#161b22; border-left:1px solid #30363d; overflow-y:auto; padding:15px; }
+.control-panel { margin-bottom:20px; padding:15px; background:#0d1117; border:1px solid #30363d; border-radius:6px; }
+.control-panel h3 { margin:0 0 10px 0; color:#58a6ff; font-size:14px; }
+.btn { background:#238636; color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-family:monospace; margin:5px 5px 5px 0; font-size:12px; }
+.btn:hover { background:#2ea043; }
+.btn:disabled { background:#484f58; cursor:not-allowed; }
+.btn.danger { background:#da3633; }
+.btn.danger:hover { background:#f85149; }
+.domain-list { max-height:300px; overflow-y:auto; }
+.domain-item { padding:8px; margin-bottom:5px; background:#0d1117; border:1px solid #30363d; border-radius:4px; font-size:11px; cursor:pointer; }
+.domain-item:hover { border-color:#58a6ff; }
+.domain-item .name { font-weight:bold; color:#58a6ff; }
+.domain-item .meta { color:#8b949e; font-size:10px; margin-top:3px; }
+.leaflet-container { background:#0d1117 !important; }
+
+/* Results Modal */
+.modal { display:none; position:fixed; z-index:1000; left:0; top:0; width:100%; height:100%; background-color:rgba(0,0,0,0.8); }
+.modal-content { background-color:#161b22; margin:5% auto; padding:20px; border:1px solid #30363d; border-radius:8px; width:80%; max-width:800px; max-height:80vh; overflow-y:auto; }
+.modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; padding-bottom:10px; border-bottom:1px solid #30363d; }
+.modal-header h2 { margin:0; color:#58a6ff; font-size:18px; }
+.close-btn { color:#8b949e; font-size:28px; font-weight:bold; cursor:pointer; background:none; border:none; }
+.close-btn:hover { color:#f85149; }
+.result-section { margin-bottom:20px; }
+.result-section h4 { color:#58a6ff; margin:10px 0 5px 0; font-size:13px; }
+.result-item { background:#0d1117; padding:10px; margin-bottom:8px; border-radius:4px; font-size:11px; border-left:3px solid #58a6ff; }
+.result-item.warning { border-left-color:#d29922; }
+.result-item.danger { border-left-color:#da3633; }
+.result-item.success { border-left-color:#3fb950; }
+.loading { text-align:center; padding:20px; color:#8b949e; }
+.loading::after { content:'...'; animation:dots 1.5s steps(5,end) infinite; }
+@keyframes dots { 0%,20% { content:'.'; } 40% { content:'..'; } 60%,100% { content:'...'; } }
+</style>
+<link rel="stylesheet" href="/leaflet.css"/>
+<script src="/leaflet.js"></script>
+</head>
+<body>
+<div id="header">
+  <h1>DULLAHAN TACTICAL INTERFACE</h1>
+  <div class="status">
+    <span id="safemode-status">🛡️ SAFE MODE: ACTIVE</span> | 
+    <span id="domain-count">📡 DOMAINS: 0</span> | 
+    <span id="verification-status">🔒 UNVERIFIED</span>
+  </div>
+</div>
+<div id="main">
+  <div id="map"></div>
+  <div id="sidebar">
+    <div class="control-panel">
+      <h3>🛡️ Safe Mode Control</h3>
+      <button class="btn" onclick="toggleSafemode()">Toggle Safe Mode</button>
+      <button class="btn danger" onclick="exportBlocklist()">Export Blocklist</button>
+    </div>
+    
+    <div class="control-panel">
+      <h3>🔍 Security Scans</h3>
+      <button class="btn" onclick="scanEXIF()">Scan EXIF Metadata</button>
+      <button class="btn" onclick="runForensics()">Run Browser Forensics</button>
+    </div>
+    
+    <div class="control-panel">
+      <h3>📡 Tracked Infrastructure</h3>
+      <div class="domain-list" id="domain-list">
+        <div class="loading">Loading domains</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Results Modal -->
+<div id="results-modal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 id="modal-title">Scan Results</h2>
+      <button class="close-btn" onclick="closeModal()">&times;</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+var map = L.map('map', { center: [20, 0], zoom: 2, minZoom: 1, maxZoom: 4, zoomControl: true });
+
+L.imageOverlay('/world_map.jpg', [[-90, -180], [90, 180]], {
+    attribution: 'Public Domain Equirectangular Map',
+    interactive: false
+}).addTo(map);
+
+var markers = [];
+
+async function loadDomains() {
+    try {
+        const response = await fetch('/api/domains');
+        const domains = await response.json();
+        markers.forEach(m => map.removeLayer(m));
+        markers = [];
+        
+        const list = document.getElementById('domain-list');
+        list.innerHTML = '';
+        
+        if (domains.length === 0) {
+            list.innerHTML = '<div style="color:#8b949e; font-style:italic;">No domains tracked</div>';
+            document.getElementById('domain-count').textContent = '📡 DOMAINS: 0';
+            return;
+        }
+        
+        domains.forEach(domain => {
+            const color = domain.risk === 'High' ? '#da3633' : domain.risk === 'Obfuscated' ? '#d29922' : '#3fb950';
+            const marker = L.circleMarker([domain.lat, domain.lon], {
+                radius: 8, fillColor: color, color: '#fff', weight: 1, fillOpacity: 0.8
+            }).addTo(map).bindPopup(
+                '<strong>' + domain.name + '</strong><br>' +
+                'IP: ' + domain.ips.join(', ') + '<br>' +
+                'Location: ' + domain.city + ', ' + domain.country + '<br>' +
+                'Risk: ' + domain.risk + '<br>' +
+                'Cert: ' + domain.cert
+            );
+            markers.push(marker);
+            
+            const item = document.createElement('div');
+            item.className = 'domain-item';
+            item.innerHTML = '<div class="name">' + domain.name + '</div>' +
+                '<div class="meta">Risk: ' + domain.risk + ' | ' + domain.city + ', ' + domain.country + '</div>' +
+                '<div class="meta">IP: ' + (domain.ips[0] || 'Unknown') + '</div>';
+            item.onclick = () => { map.setView([domain.lat, domain.lon], 4); marker.openPopup(); };
+            list.appendChild(item);
+        });
+        document.getElementById('domain-count').textContent = '📡 DOMAINS: ' + domains.length;
+    } catch (error) {
+        console.error('Failed to load domains:', error);
+        document.getElementById('domain-list').innerHTML = '<div style="color:#da3633;">Failed to load domains</div>';
+    }
+}
+
+async function loadStatus() {
+    try {
+        const response = await fetch('/api/status');
+        const status = await response.json();
+        document.getElementById('safemode-status').textContent = '🛡️ SAFE MODE: ' + (status.safemode_active ? 'ACTIVE' : 'OFF');
+        document.getElementById('verification-status').textContent = status.verification_status === 'PASS' ? '🔒 VERIFIED' : '⚠️ UNVERIFIED';
+    } catch (error) {
+        console.error('Failed to load status:', error);
+    }
+}
+
+async function toggleSafemode() {
+    try {
+        await fetch('/api/safemode/toggle', { method: 'POST' });
+        await loadStatus();
+    } catch (error) {
+        console.error('Failed to toggle safemode:', error);
+    }
+}
+
+async function scanEXIF() {
+    const btn = event.target;
+    btn.textContent = "Scanning...";
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch('/api/scan/exif', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: "." })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            showModal('EXIF Metadata Scan Results', formatEXIFResults(result.report));
+        } else {
+            showModal('EXIF Scan Failed', '<div class="result-item danger">Error: ' + result.error + '</div>');
+        }
+    } catch (error) {
+        showModal('Connection Error', '<div class="result-item danger">Failed to connect to daemon: ' + error + '</div>');
+    } finally {
+        btn.textContent = "Scan EXIF Metadata";
+        btn.disabled = false;
+    }
+}
+
+async function runForensics() {
+    const btn = event.target;
+    btn.textContent = "Scanning...";
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch('/api/scan/forensics', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            showModal('Browser Forensics Scan Results', formatForensicsResults(result));
+        }
+    } catch (error) {
+        showModal('Connection Error', '<div class="result-item danger">Failed to connect to daemon: ' + error + '</div>');
+    } finally {
+        btn.textContent = "Run Browser Forensics";
+        btn.disabled = false;
+    }
+}
+
+async function exportBlocklist() {
+    try {
+        const response = await fetch('/api/blocklist/export', { method: 'POST' });
+        const result = await response.json();
+        showModal('Blocklist Export', '<div class="result-item success">' + result.message + '</div>');
+    } catch (error) {
+        showModal('Export Failed', '<div class="result-item danger">Failed to export blocklist: ' + error + '</div>');
+    }
+}
+
+function formatEXIFResults(report) {
+    let html = '<div class="result-section"><h4>Scan Report</h4>';
+    html += '<div class="result-item success">' + report + '</div>';
+    html += '</div>';
+    return html;
+}
+
+function formatForensicsResults(result) {
+    let html = '<div class="result-section">';
+    html += '<h4>Summary</h4>';
+    html += '<div class="result-item success">Found ' + result.findings_count + ' potential artifacts</div>';
+    html += '</div>';
+    
+    if (result.details && result.details !== '[]') {
+        html += '<div class="result-section"><h4>Detailed Findings</h4>';
+        try {
+            const findings = JSON.parse(result.details);
+            findings.forEach(finding => {
+                const severity = finding.severity === 'High' ? 'danger' : finding.severity === 'Medium' ? 'warning' : 'success';
+                html += '<div class="result-item ' + severity + '">';
+                html += '<strong>' + (finding.browser || 'Unknown Browser') + '</strong><br>';
+                html += 'Type: ' + (finding.type || 'Unknown') + '<br>';
+                html += 'Path: ' + (finding.path || 'N/A');
+                html += '</div>';
+            });
+        } catch (e) {
+            html += '<div class="result-item">' + result.details + '</div>';
+        }
+        html += '</div>';
+    }
+    
+    return html;
+}
+
+function showModal(title, content) {
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-body').innerHTML = content;
+    document.getElementById('results-modal').style.display = 'block';
+}
+
+function closeModal() {
+    document.getElementById('results-modal').style.display = 'none';
+}
+
+window.onclick = function(event) {
+    const modal = document.getElementById('results-modal');
+    if (event.target === modal) {
+        modal.style.display = 'none';
+    }
+}
+
+loadDomains();
+loadStatus();
+setInterval(() => { loadDomains(); loadStatus(); }, 30000);
+</script>
+</body>
+</html>

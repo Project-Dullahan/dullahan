@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dullahan - Tactical Offline Infrastructure Map</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --panel-bg: #161b22;
+            --accent-color: #58a6ff;
+            --border-color: #30363d;
+            --text-color: #c9d1d9;
+            --alert-color: #f85149;
+            --safe-color: #3fb950;
+            --warn-color: #d29922;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #sidebar {
+            width: 350px;
+            background-color: var(--panel-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
+            z-index: 10;
+        }
+
+        #map-container {
+            flex-grow: 1;
+            position: relative;
+            background-color: #0b0e14;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        #world-map {
+            width: 100%;
+            height: 100%;
+            max-height: 95vh;
+            max-width: 95vw;
+        }
+
+        .land {
+            fill: #21262d;
+            stroke: #30363d;
+            stroke-width: 0.5;
+        }
+
+        .infra-node {
+            stroke: #ffffff;
+            stroke-width: 1.5;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+
+        .infra-node:hover {
+            transform: scale(1.8);
+            stroke-width: 2;
+        }
+
+        .pulse {
+            animation: pulse-animation 2.5s infinite;
+            fill: none;
+            stroke-width: 1;
+            opacity: 0.6;
+        }
+
+        @keyframes pulse-animation {
+            0% { r: 4px; opacity: 0.8; }
+            100% { r: 18px; opacity: 0; }
+        }
+
+        h1, h2 { margin-top: 0; color: #ffffff; }
+        h1 { font-size: 1.2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
+        h2 { font-size: 1rem; margin-top: 20px; }
+
+        .file-input-container {
+            border: 2px dashed var(--border-color);
+            padding: 20px;
+            text-align: center;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: border-color 0.2s;
+        }
+
+        .file-input-container:hover { border-color: var(--accent-color); }
+        #file-ghost { display: none; }
+
+        .node-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .node-item {
+            background: var(--bg-color);
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .node-item:hover { border-color: var(--accent-color); }
+        .meta { font-size: 0.75rem; color: #8b949e; margin-top: 4px; }
+
+        #tooltip {
+            position: absolute;
+            background: rgba(22, 27, 34, 0.95);
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            pointer-events: none;
+            display: none;
+            z-index: 100;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h1>🛡 Dullahan Tactical Map</h1>
+        <p style="font-size: 0.8rem; color: #8b949e; margin-bottom: 20px;">
+            100% Offline Sovereignty Mode.<br>Zero dynamic tile requests.
+        </p>
+        
+        <div class="file-input-container" onclick="document.getElementById('file-ghost').click()">
+            <span>📂 Drop or Select baseline.json</span>
+            <input type="file" id="file-ghost" accept=".json" onchange="loadManifest(event)">
+        </div>
+
+        <h2>Tracked Assets</h2>
+        <div class="node-list" id="asset-registry">
+            <div style="color: #8b949e; font-style: italic; font-size: 0.85rem; text-align: center; margin-top: 20px;">
+                No active configuration imported.
+            </div>
+        </div>
+    </div>
+
+    <div id="map-container">
+        <div id="tooltip"></div>
+        <!-- Loads the local, offline SVG map -->
+        <svg id="world-map" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet">
+            <image href="assets/world.svg" width="1000" height="500" class="land" />
+            <g id="map-overlays"></g>
+        </svg>
+    </div>
+
+    <script>
+        // Converts standard Lat/Lon coordinates into the 1000x500 SVG matrix
+        function latLonToSVG(lat, lon) {
+            const x = (parseFloat(lon) + 180) * (1000 / 360);
+            const y = (90 - parseFloat(lat)) * (500 / 180);
+            return { x, y };
+        }
+
+        function loadManifest(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    renderInfrastructure(data);
+                    document.getElementById('status')?.remove(); // Clear old status if any
+                } catch (err) {
+                    alert("Error parsing configuration JSON: " + err.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function renderInfrastructure(manifest) {
+            const overlayGroup = document.getElementById('map-overlays');
+            const registry = document.getElementById('asset-registry');
+            
+            overlayGroup.innerHTML = '';
+            registry.innerHTML = '';
+
+            const profiles = manifest.trusted_profiles || manifest;
+            let totalNodes = 0;
+
+            for (const [domain, profile] of Object.entries(profiles)) {
+                const infraArray = profile.resolved_infrastructure || [];
+                
+                if (infraArray.length === 0 && profile.expected_ips) {
+                    profile.expected_ips.forEach(ip => {
+                        infraArray.push({ ip: ip, asn: "Legacy Context", coordinates: null });
+                    });
+                }
+
+                // Sidebar Registry Entry
+                const item = document.createElement('div');
+                item.className = 'node-item';
+                item.innerHTML = `
+                    <strong>${domain}</strong>
+                    <div class="meta">Cert: ${profile.expected_cert_sha256 ? profile.expected_cert_sha256.substring(0, 16) + '...' : 'N/A'}</div>
+                    <div class="meta">Nodes: ${infraArray.length}</div>
+                `;
+                registry.appendChild(item);
+
+                // Map Plotting
+                infraArray.forEach(node => {
+                    if (node.coordinates && node.coordinates.latitude && node.coordinates.longitude) {
+                        const coords = latLonToSVG(node.coordinates.latitude, node.coordinates.longitude);
+                        totalNodes++;
+                        
+                        // Determine risk color (default to safe/accent, change if high risk)
+                        let color = 'var(--safe-color)';
+                        if (node.asn && node.asn.includes('UNKNOWN')) color = 'var(--alert-color)';
+                        else if (profile.risk === 'High' || profile.risk === 'Critical') color = 'var(--alert-color)';
+                        else if (profile.risk === 'Obfuscated' || profile.risk === 'Degraded') color = 'var(--warn-color)';
+
+                        // Pulse effect
+                        const pulse = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        pulse.setAttribute("cx", coords.x);
+                        pulse.setAttribute("cy", coords.y);
+                        pulse.setAttribute("class", "pulse");
+                        pulse.style.stroke = color;
+                        overlayGroup.appendChild(pulse);
+
+                        // Core node marker
+                        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                        circle.setAttribute("cx", coords.x);
+                        circle.setAttribute("cy", coords.y);
+                        circle.setAttribute("r", "5");
+                        circle.setAttribute("class", "infra-node");
+                        circle.style.fill = color;
+                        
+                        // Tooltip logic
+                        circle.addEventListener('mousemove', (e) => {
+                            const tooltip = document.getElementById('tooltip');
+                            tooltip.style.display = 'block';
+                            tooltip.style.left = (e.pageX + 15) + 'px';
+                            tooltip.style.top = (e.pageY + 15) + 'px';
+                            tooltip.innerHTML = `
+                                <strong style="color:${color}">${domain}</strong><br/>
+                                <span style="color:#8b949e">IP:</span> ${node.ip}<br/>
+                                <span style="color:#8b949e">ASN:</span> ${node.asn || 'N/A'}<br/>
+                                <span style="color:#8b949e">Org:</span> ${node.asn_organization || 'N/A'}<br/>
+                                <span style="color:#8b949e">Loc:</span> ${node.country || 'Unknown'}
+                            `;
+                        });
+
+                        circle.addEventListener('mouseout', () => {
+                            document.getElementById('tooltip').style.display = 'none';
+                        });
+
+                        overlayGroup.appendChild(circle);
+                    }
+                });
+            }
+
+            if (totalNodes === 0) {
+                const status = document.createElement('div');
+                status.id = 'status';
+                status.style.color = 'var(--warn-color)';
+                status.style.fontSize = '0.85rem';
+                status.style.marginTop = '10px';
+                status.innerText = '⚠️ No geolocated coordinates found in this JSON.';
+                registry.appendChild(status);
+            }
+        }
+    </script>
+</body>
+</html>
