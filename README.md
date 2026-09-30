@@ -1,6 +1,7 @@
 # 🛡️ Dullahan
 
 **An open-source, offline-first digital security toolkit for humanitarian aid workers, journalists, and civilians in contested or communications-denied environments.**
+**IN-PROGRESS**
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
@@ -44,4 +45,4 @@ cargo run --release --bin audit_history
 
 # Interactive dashboard (requires a local correlation report)
 ./target/release/tui --input infra_correlation_report.json
-\```
+\
