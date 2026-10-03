@@ -22,6 +22,7 @@ struct HarEntry {
 
 #[derive(Deserialize)]
 struct HarRequest {
+    #[serde(default)]
     method: String,
     url: String,
 }
@@ -130,7 +131,7 @@ fn main() {
 
     println!("Top Domains by Data Volume & Behavior:");
     let mut sorted_domains: Vec<_> = domain_stats.iter().collect();
-    sorted_domains.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    sorted_domains.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.0));
 
     for (domain, (bytes, requests, posts)) in sorted_domains.iter().take(15) {
         let mut flags = Vec::new();

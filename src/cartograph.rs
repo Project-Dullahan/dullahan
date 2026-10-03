@@ -1,9 +1,13 @@
-use maxminddb::geoip2::City;
 use maxminddb::Reader;
 use serde::Serialize;
 use std::fs;
-use std::net::IpAddr;
 use std::path::Path;
+
+#[path = "geo.rs"]
+mod geo;
+
+const LEAFLET_JS: &str = include_str!("../assets/leaflet.js");
+const LEAFLET_CSS: &str = include_str!("../assets/leaflet.css");
 
 #[derive(Serialize, Clone)]
 pub struct DomainIntel {
@@ -47,96 +51,44 @@ pub fn generate_offline_threat_map(
 
     let mut markers: Vec<DomainIntel> = Vec::new();
     let hostile_countries = ["russia", "belarus", "iran", "north korea", "china"];
+    let cdn_cities = ["ashburn", "frankfurt", "singapore", "dublin"];
 
     for mut intel in intel_data {
-        if let Ok(ip) = intel.ip.parse::<IpAddr>() {
-            if let Ok(city_data) = reader.lookup::<City>(ip) {
-                let country = city_data
-                    .country
-                    .and_then(|c| c.names)
-                    .and_then(|n| n.get("en").map(|s| s.to_string()))
-                    .unwrap_or_else(|| "Unknown".to_string());
+        let Some(info) = geo::lookup(&reader, &intel.ip) else {
+            continue;
+        };
+        let (Some(lat), Some(lon)) = (info.lat, info.lon) else {
+            continue;
+        };
+        intel.lat = lat;
+        intel.lon = lon;
 
-                let city = city_data
-                    .city
-                    .and_then(|c| c.names)
-                    .and_then(|n| n.get("en").map(|s| s.to_string()))
-                    .unwrap_or_else(|| "Unknown".to_string());
+        let country_lower = info.country.to_lowercase();
+        let city_lower = info.city.to_lowercase();
 
-                let isp = "Unknown (GeoLite2 Free)".to_string();
-
-                if let Some(loc) = city_data.location {
-                    if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude) {
-                        intel.lat = lat;
-                        intel.lon = lon;
-                        intel.country = country.clone();
-                        intel.city = city.clone();
-                        intel.isp = isp.clone();
-
-                        let country_lower = country.to_lowercase();
-                        let city_lower = city.to_lowercase();
-                        let isp_lower = isp.to_lowercase();
-
-                        let (risk_level, color) =
-                            if hostile_countries.iter().any(|&c| country_lower.contains(c)) {
-                                (
-                                    "HIGH RISK: Hostile Jurisdiction".to_string(),
-                                    "#ff0033".to_string(),
-                                )
-                            } else if isp_lower.contains("military")
-                                || isp_lower.contains("gov")
-                                || isp_lower.contains("state")
-                            {
-                                (
-                                    "HIGH RISK: Gov/Military Infra".to_string(),
-                                    "#ff0033".to_string(),
-                                )
-                            } else if city_lower.contains("ashburn")
-                                || city_lower.contains("frankfurt")
-                                || city_lower.contains("singapore")
-                                || city_lower.contains("dublin")
-                                || isp_lower.contains("cloudflare")
-                                || isp_lower.contains("akamai")
-                                || isp_lower.contains("amazon")
-                            {
-                                ("OBFUSCATED (CDN/Cloud)".to_string(), "#ffaa00".to_string())
-                            } else {
-                                ("NEUTRAL".to_string(), "#00ff41".to_string())
-                            };
-
-                        intel.risk_level = risk_level;
-                        intel.color = color;
-                        markers.push(intel);
-                    }
-                }
-            }
+        // Hostile jurisdiction outranks the caller's assessment; a CDN hub only
+        // upgrades an otherwise neutral rating. Anything else keeps the caller's rating.
+        if hostile_countries.iter().any(|&c| country_lower.contains(c)) {
+            intel.risk_level = "HIGH RISK: Hostile Jurisdiction".to_string();
+            intel.color = "#ff0033".to_string();
+        } else if intel.risk_level == "NEUTRAL"
+            && cdn_cities.iter().any(|&c| city_lower.contains(c))
+        {
+            intel.risk_level = "OBFUSCATED (CDN/Cloud)".to_string();
+            intel.color = "#ffaa00".to_string();
         }
+
+        intel.country = info.country;
+        intel.city = info.city;
+        markers.push(intel);
     }
 
     println!("[INFO] Mapped {} coordinates.", markers.len());
 
-    let home_dir = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            eprintln!("Warning: Could not determine home directory. Leaflet assets will not be auto-copied.");
-            let html = generate_dashboard_html(&markers);
-            match fs::write(output_path, html) {
-                Ok(_) => println!("[SUCCESS] Tactical dashboard rendered to: {}", output_path),
-                Err(e) => eprintln!("Error: Could not write dashboard file. ({})", e),
-            }
-            return;
-        }
-    };
-
-    let web_dir = home_dir.join(".local/share/dullahan/web");
+    // The dashboard template loads leaflet from the same directory
     let out_dir = Path::new(output_path).parent().unwrap_or(Path::new("."));
-
-    if web_dir.join("leaflet.js").exists() {
-        let _ = fs::copy(web_dir.join("leaflet.js"), out_dir.join("leaflet.js"));
-    }
-    if web_dir.join("leaflet.css").exists() {
-        let _ = fs::copy(web_dir.join("leaflet.css"), out_dir.join("leaflet.css"));
-    }
+    let _ = fs::write(out_dir.join("leaflet.js"), LEAFLET_JS);
+    let _ = fs::write(out_dir.join("leaflet.css"), LEAFLET_CSS);
 
     let html = generate_dashboard_html(&markers);
     match fs::write(output_path, html) {

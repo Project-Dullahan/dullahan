@@ -13,22 +13,15 @@ use std::sync::Arc;
 
 #[derive(Deserialize, Debug)]
 struct BaselineConfig {
-    generated_at: String,
     trusted_profiles: std::collections::HashMap<String, DomainProfile>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct DomainProfile {
     domain: String,
+    #[serde(alias = "cert_sha256")]
     expected_cert_sha256: String,
-    resolved_infrastructure: Vec<IpProfile>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct IpProfile {
-    ip: String,
-    asn: String,
-    asn_organization: String,
+    expected_ips: Vec<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -76,11 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let expected_ips: HashSet<String> = profile
-        .resolved_infrastructure
-        .iter()
-        .map(|ip| ip.ip.clone())
-        .collect();
+    let expected_ips: HashSet<String> = profile.expected_ips.iter().cloned().collect();
     let mutated_ips: Vec<&String> = live_ips.difference(&expected_ips).collect();
 
     let mut ip_warning = false;

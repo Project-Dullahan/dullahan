@@ -76,14 +76,20 @@ rule Phishing_Kit_Indicator {
 }
 "#;
 
-pub fn scan_file(file_path: &Path) -> Result<ScanResult, String> {
+const SCANNED_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "pdf", "html", "htm", "php", "js",
+];
+
+fn compile_rules() -> Result<yara_x::Rules, String> {
     let mut compiler = Compiler::new();
     compiler
         .add_source(DEFAULT_RULES)
         .map_err(|e| format!("Failed to compile YARA rules: {}", e))?;
+    Ok(compiler.build())
+}
 
-    let rules = compiler.build();
-    let mut scanner = yara_x::Scanner::new(&rules);
+fn scan_with_rules(rules: &yara_x::Rules, file_path: &Path) -> Result<ScanResult, String> {
+    let mut scanner = yara_x::Scanner::new(rules);
 
     let file_data = fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
@@ -91,10 +97,16 @@ pub fn scan_file(file_path: &Path) -> Result<ScanResult, String> {
         .scan(&file_data)
         .map_err(|e| format!("Scan failed: {}", e))?;
 
-    let matched_rules: Vec<String> = scan_results
+    let mut matched_rules: Vec<String> = scan_results
         .matching_rules()
         .map(|rule| rule.identifier().to_string())
         .collect();
+
+    // EXIF stores GPS as numeric tags, not the text "GPSLatitude", so YARA string rules
+    // cannot see it in real photos. Parse the EXIF block properly instead.
+    if has_gps_exif(&file_data) {
+        matched_rules.push("GPS_Location_In_EXIF".to_string());
+    }
 
     Ok(ScanResult {
         file: file_path.to_string_lossy().to_string(),
@@ -103,32 +115,36 @@ pub fn scan_file(file_path: &Path) -> Result<ScanResult, String> {
     })
 }
 
-pub fn scan_directory(dir_path: &Path) -> Vec<ScanResult> {
-    let mut results = Vec::new();
+fn has_gps_exif(file_data: &[u8]) -> bool {
+    exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(file_data))
+        .map(|exif| {
+            exif.fields()
+                .any(|f| matches!(f.tag, exif::Tag::GPSLatitude | exif::Tag::GPSLongitude))
+        })
+        .unwrap_or(false)
+}
 
-    if let Ok(entries) = fs::read_dir(dir_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    let ext = ext.to_string_lossy().to_lowercase();
-                    // Only scan relevant file types
-                    if [
-                        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "pdf", "html", "htm", "php",
-                        "js",
-                    ]
-                    .contains(&ext.as_str())
-                    {
-                        if let Ok(result) = scan_file(&path) {
-                            if result.is_suspicious {
-                                results.push(result);
-                            }
-                        }
-                    }
-                }
+pub fn scan_file(file_path: &Path) -> Result<ScanResult, String> {
+    scan_with_rules(&compile_rules()?, file_path)
+}
+
+/// Scans every supported file in `dir_path` (non-recursive) and returns a result per file.
+pub fn scan_directory(dir_path: &Path) -> Result<Vec<ScanResult>, String> {
+    let rules = compile_rules()?;
+    let entries = fs::read_dir(dir_path).map_err(|e| format!("Failed to read directory: {}", e))?;
+
+    let mut results = Vec::new();
+    for path in entries.flatten().map(|e| e.path()) {
+        let supported = path.is_file()
+            && path.extension().is_some_and(|ext| {
+                SCANNED_EXTENSIONS.contains(&ext.to_string_lossy().to_lowercase().as_str())
+            });
+        if supported {
+            if let Ok(result) = scan_with_rules(&rules, &path) {
+                results.push(result);
             }
         }
     }
-
-    results
+    Ok(results)
 }

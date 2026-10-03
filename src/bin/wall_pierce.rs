@@ -79,11 +79,14 @@ fn main() {
 
         match TcpStream::connect_timeout(&sock_addr, Duration::from_secs(5)) {
             Ok(mut sock) => {
-                let mut tls = Stream::new(&mut conn, &mut sock);
-                // Trigger handshake by attempting to write
-                let _ = tls.write_all(b"GET / HTTP/1.1\r\n\r\n");
-
-                if let Some(certs) = conn.peer_certificates() {
+                // Drive the handshake to completion (flush performs any pending handshake I/O)
+                if let Err(e) = Stream::new(&mut conn, &mut sock).flush() {
+                    // rustls rejects untrusted/self-signed/expired/mismatched certs here
+                    println!("  [FAIL] TLS handshake failed: {}", e);
+                    println!(
+                        "  [WARNING] The certificate could not be validated against trusted roots."
+                    );
+                } else if let Some(certs) = conn.peer_certificates() {
                     if let Some(der_cert) = certs.first() {
                         match parse_x509_certificate(der_cert.as_ref()) {
                             Ok((_, cert)) => {

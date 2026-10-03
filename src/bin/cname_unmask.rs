@@ -57,6 +57,34 @@ fn check_http_intel(client: &Client, domain: &str) -> (Vec<String>, usize) {
     (missing_headers, tracker_count)
 }
 
+fn normalize_host(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let without_scheme = line.split_once("://").map_or(line, |(_, rest)| rest);
+    let host = without_scheme.split('/').next().unwrap_or("");
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+fn build_resolver_and_client() -> (Resolver, Client) {
+    let resolver = match Resolver::new(ResolverConfig::default(), ResolverOpts::default()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: Failed to initialize DNS resolver. ({})", e);
+            std::process::exit(1);
+        }
+    };
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .user_agent("Mozilla/5.0 Dullahan/0.1 Security Audit")
+        .build()
+        .expect("Failed to initialize HTTP client");
+
+    (resolver, client)
+}
+
 fn export_blocklist(file_path: &str, format: ExportFormat) {
     let file_content = match fs::read_to_string(file_path) {
         Ok(content) => content,
@@ -66,37 +94,16 @@ fn export_blocklist(file_path: &str, format: ExportFormat) {
         }
     };
 
-    let resolver = match Resolver::new(ResolverConfig::default(), ResolverOpts::default()) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error initializing resolver: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(3))
-        .user_agent("Mozilla/5.0 Dullahan/0.1 Security Audit")
-        .build()
-        .unwrap();
+    let (resolver, client) = build_resolver_and_client();
 
     let mut high_risk_domains = Vec::new();
 
     println!("[DULLAHAN] Analyzing domains for export...");
 
     for line in file_content.lines() {
-        let mut target_host = line.trim().to_string();
-        if target_host.is_empty() || target_host.starts_with('#') {
+        let Some(target_host) = normalize_host(line) else {
             continue;
-        }
-
-        target_host = target_host
-            .replace("https://", "")
-            .replace("http://", "")
-            .replace("://", "");
-        if let Some(pos) = target_host.find('/') {
-            target_host = target_host[..pos].to_string();
-        }
+        };
 
         println!("  Checking: {}", target_host);
 
@@ -104,7 +111,7 @@ fn export_blocklist(file_path: &str, format: ExportFormat) {
             let (missing_headers, _) = check_http_intel(&client, &target_host);
 
             // Only export HIGH RISK domains (3+ missing headers or OFFLINE)
-            if missing_headers.len() >= 3 || missing_headers.contains(&"OFFLINE".to_string()) {
+            if missing_headers.len() >= 3 || missing_headers.iter().any(|h| h == "OFFLINE") {
                 high_risk_domains.push(target_host);
             }
         }
@@ -219,35 +226,14 @@ fn main() {
     println!("[DULLAHAN] Initiating deep reconnaissance pass...");
     println!("Reading targets from: {}\n", file_path);
 
-    let resolver = match Resolver::new(ResolverConfig::default(), ResolverOpts::default()) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Error: Failed to initialize DNS resolver. ({})", e);
-            std::process::exit(1);
-        }
-    };
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(3))
-        .user_agent("Mozilla/5.0 Dullahan/0.1 Security Audit")
-        .build()
-        .unwrap();
+    let (resolver, client) = build_resolver_and_client();
 
     let mut intel_data: Vec<cartograph::DomainIntel> = Vec::new();
 
     for line in file_content.lines() {
-        let mut target_host = line.trim().to_string();
-        if target_host.is_empty() || target_host.starts_with('#') {
+        let Some(target_host) = normalize_host(line) else {
             continue;
-        }
-
-        target_host = target_host
-            .replace("https://", "")
-            .replace("http://", "")
-            .replace("://", "");
-        if let Some(pos) = target_host.find('/') {
-            target_host = target_host[..pos].to_string();
-        }
+        };
 
         println!("Probing: {}", target_host);
 
@@ -264,7 +250,7 @@ fn main() {
                         tracker_count
                     );
 
-                    let (risk_level, color) = if missing_headers.contains(&"OFFLINE".to_string()) {
+                    let (risk_level, color) = if missing_headers.iter().any(|h| h == "OFFLINE") {
                         ("OFFLINE / UNREACHABLE".to_string(), "#888888".to_string())
                     } else if missing_headers.len() >= 3 {
                         (

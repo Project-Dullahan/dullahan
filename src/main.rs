@@ -1,9 +1,8 @@
 mod forensics;
-mod metadata;
+mod geo;
 mod scanner;
 mod web_server;
 
-use maxminddb::geoip2::City;
 use maxminddb::Reader;
 use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
@@ -11,45 +10,31 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::net::ToSocketAddrs; // NEW: Added to resolve domains to IPs
+use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex};
 use std::thread;
-
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-enum DomainTag {
-    Safe,
-    Malicious,
-    Investigate,
-    None,
-}
-
-#[derive(Clone, PartialEq)]
-enum RiskLevel {
-    High,
-    Obfuscated,
-    Neutral,
-    Offline,
-}
-
-#[derive(Clone)]
-struct DomainIntel {
-    name: String,
-    risk: RiskLevel,
-    lat: f64,
-    lon: f64,
-    ips: Vec<String>,
-    details: String,
-    safemode_alerts: Vec<String>,
-    tag: DomainTag,
-}
+use web_server::WebDomain;
 
 #[derive(Deserialize)]
 struct CorrelationReport {
     clusters: Vec<CorrelationCluster>,
     analyzed_domains: Vec<String>,
+    #[serde(default)]
+    threat_ips: Vec<ThreatIp>,
 }
 
-#[derive(Deserialize, Clone)]
+/// An IP indicator imported from an external feed. `source` should name the feed;
+/// entries without one are shown in the UI as unverified.
+#[derive(Deserialize)]
+struct ThreatIp {
+    ip: String,
+    risk: String,
+    label: String,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CorrelationCluster {
     cluster_id: usize,
     correlation_type: String,
@@ -59,31 +44,56 @@ struct CorrelationCluster {
     risk_assessment: String,
 }
 
-fn load_and_geolocate_domains(file_path: &str, reader: &Reader<Vec<u8>>) -> Vec<DomainIntel> {
-    let content = match fs::read_to_string(file_path) {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let report: CorrelationReport = match serde_json::from_str(&content) {
+fn new_domain(name: &str, risk: &str) -> WebDomain {
+    WebDomain {
+        name: name.to_string(),
+        risk: risk.to_string(),
+        lat: 0.0,
+        lon: 0.0,
+        ips: vec![],
+        city: "Unknown".to_string(),
+        country: "Unknown".to_string(),
+        cert: "Embedded".to_string(),
+        market_type: "Standard Infrastructure".to_string(),
+        details: String::new(),
+        source: None,
+        located: false,
+        safemode_alerts: vec![],
+        tag: "None".to_string(),
+    }
+}
+
+fn market_type(ip: &str) -> &'static str {
+    if ip.starts_with("104.") || ip.starts_with("172.") || ip.starts_with("173.") {
+        "CDN Proxy (e.g., Cloudflare)"
+    } else if ip.starts_with("3.") || ip.starts_with("52.") || ip.starts_with("54.") {
+        "Enterprise Cloud (e.g., AWS)"
+    } else {
+        "Standard Infrastructure"
+    }
+}
+
+fn load_and_geolocate_domains(file_path: &str, reader: &Reader<Vec<u8>>) -> Vec<WebDomain> {
+    let report: CorrelationReport = match fs::read_to_string(file_path)
+        .map_err(|e| e.to_string())
+        .and_then(|c| serde_json::from_str(&c).map_err(|e| e.to_string()))
+    {
         Ok(r) => r,
-        Err(_) => return vec![],
+        Err(e) => {
+            eprintln!(
+                "[!] Could not load correlation report '{}': {}",
+                file_path, e
+            );
+            return vec![];
+        }
     };
 
-    let mut domain_map: HashMap<String, DomainIntel> = HashMap::new();
+    let mut domain_map: HashMap<String, WebDomain> = HashMap::new();
     for cluster in &report.clusters {
         for domain_name in &cluster.domains {
             let entry = domain_map
                 .entry(domain_name.clone())
-                .or_insert_with(|| DomainIntel {
-                    name: domain_name.clone(),
-                    risk: RiskLevel::Obfuscated,
-                    lat: 0.0,
-                    lon: 0.0,
-                    ips: vec![],
-                    details: String::new(),
-                    safemode_alerts: vec![],
-                    tag: DomainTag::None,
-                });
+                .or_insert_with(|| new_domain(domain_name, "Obfuscated"));
             entry.details.push_str(&format!(
                 "Cluster {}: {} (Shared: {})\nConfidence: {}\nAssessment: {}\n\n",
                 cluster.cluster_id,
@@ -93,56 +103,76 @@ fn load_and_geolocate_domains(file_path: &str, reader: &Reader<Vec<u8>>) -> Vec<
                 cluster.risk_assessment
             ));
             if cluster.correlation_type == "SHARED_CERTIFICATE" {
-                entry.risk = RiskLevel::High;
+                entry.risk = "High".to_string();
             }
         }
     }
     for domain_name in &report.analyzed_domains {
-        if !domain_map.contains_key(domain_name) {
-            domain_map.insert(
-                domain_name.clone(),
-                DomainIntel {
-                    name: domain_name.clone(),
-                    risk: RiskLevel::Neutral,
-                    lat: 0.0,
-                    lon: 0.0,
-                    ips: vec!["No correlations found".into()],
-                    details: "Domain was analyzed but did not share infrastructure.".into(),
-                    safemode_alerts: vec![],
-                    tag: DomainTag::None,
-                },
-            );
-        }
+        domain_map.entry(domain_name.clone()).or_insert_with(|| {
+            let mut d = new_domain(domain_name, "Neutral");
+            d.details = "Domain was analyzed but did not share infrastructure.".to_string();
+            d
+        });
     }
 
-    let mut domains: Vec<DomainIntel> = domain_map.into_values().collect();
+    let mut domains: Vec<WebDomain> = domain_map.into_values().collect();
 
-    // NEW: Geolocate and ensure we actually have an IP to look up
     for domain in &mut domains {
-        // 1. If the JSON didn't provide an IP, try to resolve the domain name to one
-        if domain.ips.is_empty() || domain.ips[0] == "No correlations found" {
-            if let Ok(mut addrs) = format!("{}:80", domain.name).to_socket_addrs() {
-                if let Some(addr) = addrs.next() {
-                    domain.ips = vec![addr.ip().to_string()];
-                }
-            }
+        if let Ok(addrs) = format!("{}:80", domain.name).to_socket_addrs() {
+            // IPv4 first: GeoLite2 has far better coordinate coverage for v4 than v6
+            let mut ips: Vec<String> = addrs.map(|a| a.ip().to_string()).collect();
+            ips.sort_by_key(|ip| ip.contains(':'));
+            ips.dedup();
+            domain.ips = ips;
         }
-
-        // 2. Now geolocate the IP we have
-        if let Some(first_ip) = domain.ips.first() {
-            if let Ok(ip_addr) = first_ip.parse::<std::net::IpAddr>() {
-                if let Ok(city_data) = reader.lookup::<City>(ip_addr) {
-                    let loc = city_data.location.as_ref();
-                    domain.lat = loc.and_then(|l| l.latitude).unwrap_or(0.0);
-                    domain.lon = loc.and_then(|l| l.longitude).unwrap_or(0.0);
-                }
-            }
-        }
+        geolocate(domain, reader);
     }
+
+    for threat in report.threat_ips {
+        let risk = match threat.risk.to_lowercase().as_str() {
+            "high" => "High",
+            "medium" => "Obfuscated",
+            _ => "Neutral",
+        };
+        let mut d = new_domain(&threat.label, risk);
+        d.details = format!(
+            "Threat indicator: {} ({})\nSource: {}",
+            threat.label,
+            threat.ip,
+            threat
+                .source
+                .as_deref()
+                .unwrap_or("UNVERIFIED - no source given")
+        );
+        d.source = Some(threat.source.unwrap_or_else(|| "unverified".to_string()));
+        d.ips = vec![threat.ip];
+        geolocate(&mut d, reader);
+        domains.push(d);
+    }
+
     domains
 }
 
-fn main() -> Result<(), std::io::Error> {
+/// Fills location fields from the first IP that GeoLite2 can place on the map.
+fn geolocate(domain: &mut WebDomain, reader: &Reader<Vec<u8>>) {
+    if let Some(first_ip) = domain.ips.first() {
+        domain.market_type = market_type(first_ip).to_string();
+    }
+    for ip in &domain.ips {
+        if let Some(info) = geo::lookup(reader, ip) {
+            if let (Some(lat), Some(lon)) = (info.lat, info.lon) {
+                domain.lat = lat;
+                domain.lon = lon;
+                domain.city = info.city;
+                domain.country = info.country;
+                domain.located = true;
+                return;
+            }
+        }
+    }
+}
+
+fn main() {
     println!("[*] Initializing Dullahan Unified Tactical Daemon...");
 
     let args: Vec<String> = env::args().collect();
@@ -155,83 +185,15 @@ fn main() -> Result<(), std::io::Error> {
     let mmdb_bytes = include_bytes!("../assets/GeoLite2-City.mmdb").to_vec();
     let reader = Reader::from_source(mmdb_bytes).expect("Failed to load MaxMind DB");
 
-    let domains_intel = load_and_geolocate_domains(&input_file, &reader);
-
-    let web_domains: Vec<web_server::WebDomain> = domains_intel
-        .into_iter()
-        .map(|d| {
-            let mut city = "Unknown".to_string();
-            let mut country = "Unknown".to_string();
-            let mut market_type = "Standard Infrastructure".to_string();
-
-            if let Some(first_ip) = d.ips.first() {
-                // Market Type Heuristic
-                if first_ip.starts_with("104.")
-                    || first_ip.starts_with("172.")
-                    || first_ip.starts_with("173.")
-                {
-                    market_type = "CDN Proxy (e.g., Cloudflare)".to_string();
-                } else if first_ip.starts_with("3.")
-                    || first_ip.starts_with("52.")
-                    || first_ip.starts_with("54.")
-                {
-                    market_type = "Enterprise Cloud (e.g., AWS)".to_string();
-                }
-
-                if let Ok(ip_addr) = first_ip.parse::<std::net::IpAddr>() {
-                    if let Ok(city_data) = reader.lookup::<City>(ip_addr) {
-                        city = city_data
-                            .city
-                            .and_then(|c| c.names)
-                            .and_then(|n| n.get("en").map(|s| s.to_string()))
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        country = city_data
-                            .country
-                            .and_then(|c| c.names)
-                            .and_then(|n| n.get("en").map(|s| s.to_string()))
-                            .unwrap_or_else(|| "Unknown".to_string());
-                    }
-                }
-            }
-
-            web_server::WebDomain {
-                name: d.name,
-                risk: match d.risk {
-                    RiskLevel::High => "High".to_string(),
-                    RiskLevel::Obfuscated => "Obfuscated".to_string(),
-                    RiskLevel::Neutral => "Neutral".to_string(),
-                    RiskLevel::Offline => "Offline".to_string(),
-                },
-                lat: d.lat,
-                lon: d.lon,
-                ips: d.ips,
-                city,
-                country,
-                cert: "Embedded".to_string(),
-                market_type,
-                safemode_alerts: d.safemode_alerts,
-                tag: match d.tag {
-                    DomainTag::Safe => "Safe".to_string(),
-                    DomainTag::Malicious => "Malicious".to_string(),
-                    DomainTag::Investigate => "Investigate".to_string(),
-                    DomainTag::None => "None".to_string(),
-                },
-            }
-        })
-        .collect();
-
     let initial_state = web_server::AppState {
-        domains: web_domains,
+        domains: load_and_geolocate_domains(&input_file, &reader),
         safemode_active: true,
         verification_status: "UNVERIFIED".to_string(),
+        dns_tampered: false,
+        last_file_scan_flags: None,
+        last_history_dbs: None,
     };
-
     let state = Arc::new(Mutex::new(initial_state));
-    let server_state = Arc::clone(&state);
-
-    thread::spawn(move || {
-        web_server::start_web_server(server_state, 8080);
-    });
 
     // Background Network Hijack Monitor
     let monitor_state = Arc::clone(&state);
@@ -246,6 +208,7 @@ fn main() -> Result<(), std::io::Error> {
                 if !last_hash.is_empty() && current_hash != last_hash {
                     let mut state = monitor_state.lock().unwrap();
                     state.verification_status = "⚠️ DNS ALTERATION DETECTED".to_string();
+                    state.dns_tampered = true;
                     println!("[!] CRITICAL ALERT: /etc/resolv.conf was modified locally!");
                 }
                 last_hash = current_hash;
@@ -254,11 +217,9 @@ fn main() -> Result<(), std::io::Error> {
         }
     });
 
-    println!("[+] Daemon running at http://127.0.0.1:8080");
-    println!("[*] Open your browser to view the tactical map interface.");
-    println!("[*] Press Ctrl+C to stop the daemon.");
-
-    loop {
-        thread::sleep(std::time::Duration::from_secs(3600));
+    // Blocks for the lifetime of the daemon; only returns if the server fails to start.
+    if let Err(e) = web_server::start_web_server(state, 8080) {
+        eprintln!("[-] Failed to start server on port 8080: {}", e);
+        std::process::exit(1);
     }
 }

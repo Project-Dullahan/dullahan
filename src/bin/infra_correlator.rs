@@ -1,11 +1,9 @@
 use reqwest::blocking::Client;
 use rustls::{ClientConfig, ClientConnection, ServerName};
 use serde::Serialize;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,7 +102,7 @@ fn main() {
             .and_then(|r| r.text())
         {
             intel.tracking_ids = extract_tracking_ids(&html);
-            intel.html_fingerprint = Some(compute_html_fingerprint(&html));
+            intel.html_fingerprint = compute_html_fingerprint(&html);
         }
 
         intel_map.insert(domain.clone(), intel);
@@ -145,7 +143,6 @@ fn fetch_certificate(
         .next()
         .ok_or("DNS resolution returned no addresses")?;
     let mut sock = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(5))?;
-    let _tls = rustls::Stream::new(&mut conn, &mut sock);
 
     // FIX 1: Drive the TLS handshake to completion
     while conn.is_handshaking() {
@@ -165,40 +162,39 @@ fn fetch_certificate(
     Ok((None, None))
 }
 
-// FIX 5: Loop to catch ALL tracking IDs, not just the first one
+// Collect ALL tracking IDs, not just the first one
 fn extract_tracking_ids(html: &str) -> HashSet<String> {
     let mut ids = HashSet::new();
-    let mut cursor = html;
 
-    // Google Analytics
-    while let Some(pos) = cursor.find("G-") {
-        if pos + 12 <= cursor.len() {
-            let potential_id = &cursor[pos..pos + 12];
-            if potential_id.chars().skip(2).all(|c| c.is_alphanumeric()) {
+    // Google Analytics 4: "G-" followed by 10 alphanumerics.
+    // `get` (not indexing) so a multi-byte UTF-8 char at the boundary can't panic.
+    for (pos, _) in html.match_indices("G-") {
+        if let Some(potential_id) = html.get(pos..pos + 12) {
+            if potential_id[2..].chars().all(|c| c.is_ascii_alphanumeric()) {
                 ids.insert(format!("GA:{}", potential_id));
             }
         }
-        cursor = &cursor[pos + 2..];
     }
 
-    // Facebook Pixel
-    cursor = html;
-    while let Some(pos) = cursor.find("fbq('init', '") {
-        let start = pos + 14;
-        if start + 15 <= cursor.len() {
-            let segment = &cursor[start..start + 15];
-            if segment.chars().all(|c| c.is_numeric()) {
-                ids.insert(format!("FB:{}", segment));
-            }
+    // Facebook Pixel: fbq('init', '<15-16 digit id>')
+    const FB_PREFIX: &str = "fbq('init', '";
+    for (pos, _) in html.match_indices(FB_PREFIX) {
+        let digits: String = html[pos + FB_PREFIX.len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits.len() >= 15 {
+            ids.insert(format!("FB:{}", digits));
         }
-        cursor = &cursor[start..];
     }
 
     ids
 }
 
-// FIX 4: Real cryptographic hash instead of length arithmetic
-fn compute_html_fingerprint(html: &str) -> String {
+// SHA-256 so fingerprints are stable across runs and toolchains
+/// Returns None when the page has no script/meta structure to fingerprint; otherwise every
+/// such page would hash identically and be falsely clustered together.
+fn compute_html_fingerprint(html: &str) -> Option<String> {
     let mut fingerprint = String::new();
 
     for line in html.lines() {
@@ -218,110 +214,78 @@ fn compute_html_fingerprint(html: &str) -> String {
         }
     }
 
-    let mut hasher = DefaultHasher::new();
-    fingerprint.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    if fingerprint.is_empty() {
+        return None;
+    }
+
+    Some(hex::encode(ring::digest::digest(
+        &ring::digest::SHA256,
+        fingerprint.as_bytes(),
+    )))
+}
+
+/// Groups domains by `indicators` and emits a cluster for each indicator shared by 2+ domains.
+fn push_clusters<F, I>(
+    clusters: &mut Vec<CorrelationCluster>,
+    intel_map: &HashMap<String, DomainIntel>,
+    correlation_type: &str,
+    confidence: &str,
+    risk_assessment: &str,
+    indicators: F,
+) where
+    F: Fn(&DomainIntel) -> I,
+    I: IntoIterator<Item = String>,
+{
+    // BTreeMap so cluster ordering/IDs are stable between runs
+    let mut by_indicator: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (domain, intel) in intel_map {
+        for indicator in indicators(intel) {
+            by_indicator
+                .entry(indicator)
+                .or_default()
+                .push(domain.clone());
+        }
+    }
+    for (shared_indicator, mut domains) in by_indicator {
+        domains.sort();
+        domains.dedup();
+        if domains.len() > 1 {
+            clusters.push(CorrelationCluster {
+                cluster_id: clusters.len() + 1,
+                correlation_type: correlation_type.to_string(),
+                shared_indicator,
+                domains,
+                confidence: confidence.to_string(),
+                risk_assessment: risk_assessment.to_string(),
+            });
+        }
+    }
 }
 
 fn perform_correlation(intel_map: &HashMap<String, DomainIntel>) -> Vec<CorrelationCluster> {
     let mut clusters = Vec::new();
-    let mut cluster_id = 1;
 
-    // Correlation 1: Shared IP Addresses
-    let mut ip_to_domains: HashMap<String, Vec<String>> = HashMap::new();
-    for (domain, intel) in intel_map {
-        for ip in &intel.ips {
-            ip_to_domains
-                .entry(ip.clone())
-                .or_default()
-                .push(domain.clone());
-        }
-    }
-    for (ip, domains) in ip_to_domains {
-        if domains.len() > 1 {
-            clusters.push(CorrelationCluster {
-                cluster_id,
-                correlation_type: "SHARED_IP".to_string(),
-                shared_indicator: ip,
-                domains: domains.clone(),
-                confidence: "HIGH".to_string(),
-                risk_assessment: "These domains share the same IP address, suggesting they are hosted on the same infrastructure".to_string(),
-            });
-            cluster_id += 1;
-        }
-    }
-
-    // Correlation 2: Shared SSL Certificates
-    let mut cert_to_domains: HashMap<String, Vec<String>> = HashMap::new();
-    for (domain, intel) in intel_map {
-        if let Some(ref subject) = intel.cert_subject {
-            cert_to_domains
-                .entry(subject.clone())
-                .or_default()
-                .push(domain.clone());
-        }
-    }
-    for (cert, domains) in cert_to_domains {
-        if domains.len() > 1 {
-            clusters.push(CorrelationCluster {
-                cluster_id,
-                correlation_type: "SHARED_CERTIFICATE".to_string(),
-                shared_indicator: cert,
-                domains: domains.clone(),
-                confidence: "VERY_HIGH".to_string(),
-                risk_assessment: "These domains share the same SSL certificate, strongly indicating they are operated by the same entity".to_string(),
-            });
-            cluster_id += 1;
-        }
-    }
-
-    // Correlation 3: Shared Tracking IDs
-    let mut tracking_to_domains: HashMap<String, Vec<String>> = HashMap::new();
-    for (domain, intel) in intel_map {
-        for tracking_id in &intel.tracking_ids {
-            tracking_to_domains
-                .entry(tracking_id.clone())
-                .or_default()
-                .push(domain.clone());
-        }
-    }
-    for (tracking_id, domains) in tracking_to_domains {
-        if domains.len() > 1 {
-            clusters.push(CorrelationCluster {
-                cluster_id,
-                correlation_type: "SHARED_TRACKING_ID".to_string(),
-                shared_indicator: tracking_id,
-                domains: domains.clone(),
-                confidence: "HIGH".to_string(),
-                risk_assessment: "These domains use the same tracking identifier, suggesting coordinated operations or common ownership".to_string(),
-            });
-            cluster_id += 1;
-        }
-    }
-
-    // Correlation 4: Similar HTML Fingerprints
-    let mut fingerprint_to_domains: HashMap<String, Vec<String>> = HashMap::new();
-    for (domain, intel) in intel_map {
-        if let Some(ref fp) = intel.html_fingerprint {
-            fingerprint_to_domains
-                .entry(fp.clone())
-                .or_default()
-                .push(domain.clone());
-        }
-    }
-    for (fingerprint, domains) in fingerprint_to_domains {
-        if domains.len() > 1 {
-            clusters.push(CorrelationCluster {
-                cluster_id,
-                correlation_type: "SIMILAR_HTML_STRUCTURE".to_string(),
-                shared_indicator: format!("Fingerprint: {}", fingerprint),
-                domains: domains.clone(),
-                confidence: "MEDIUM".to_string(),
-                risk_assessment: "These domains have similar HTML structure, possibly using the same template or CMS".to_string(),
-            });
-            cluster_id += 1;
-        }
-    }
+    push_clusters(&mut clusters, intel_map, "SHARED_IP", "HIGH",
+        "These domains share the same IP address, suggesting they are hosted on the same infrastructure",
+        |i| i.ips.clone());
+    push_clusters(&mut clusters, intel_map, "SHARED_CERTIFICATE", "VERY_HIGH",
+        "These domains share the same SSL certificate, strongly indicating they are operated by the same entity",
+        |i| i.cert_subject.clone());
+    push_clusters(&mut clusters, intel_map, "SHARED_TRACKING_ID", "HIGH",
+        "These domains use the same tracking identifier, suggesting coordinated operations or common ownership",
+        |i| i.tracking_ids.iter().cloned().collect::<Vec<_>>());
+    push_clusters(
+        &mut clusters,
+        intel_map,
+        "SIMILAR_HTML_STRUCTURE",
+        "MEDIUM",
+        "These domains have similar HTML structure, possibly using the same template or CMS",
+        |i| {
+            i.html_fingerprint
+                .as_ref()
+                .map(|fp| format!("Fingerprint: {}", fp))
+        },
+    );
 
     clusters
 }
@@ -364,9 +328,18 @@ fn generate_report(clusters: &[CorrelationCluster], intel_map: &HashMap<String, 
     }
 
     let report_path = "infra_correlation_report.json";
+    // threat_ips are imported by hand from external feeds; carry them over rather than wipe them
+    let threat_ips = fs::read_to_string(report_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| v.get("threat_ips").cloned())
+        .unwrap_or_else(|| serde_json::json!([]));
+    let mut analyzed_domains: Vec<_> = intel_map.keys().collect();
+    analyzed_domains.sort();
     let report_data = serde_json::json!({
         "clusters": clusters,
-        "analyzed_domains": intel_map.keys().collect::<Vec<_>>()
+        "analyzed_domains": analyzed_domains,
+        "threat_ips": threat_ips
     });
 
     if let Ok(json) = serde_json::to_string_pretty(&report_data) {
@@ -376,4 +349,31 @@ fn generate_report(clusters: &[CorrelationCluster], intel_map: &HashMap<String, 
     }
 
     println!("{}", "=".repeat(80));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_full_tracking_ids() {
+        let html =
+            "<script>gtag('config','G-ABCDE12345');fbq('init', '1234567890123456');</script>";
+        let ids = extract_tracking_ids(html);
+        assert!(ids.contains("GA:G-ABCDE12345"));
+        assert!(ids.contains("FB:1234567890123456"));
+    }
+
+    #[test]
+    fn pages_without_structure_are_not_fingerprinted() {
+        assert_eq!(
+            compute_html_fingerprint("<html><body>hi</body></html>"),
+            None
+        );
+    }
+
+    #[test]
+    fn multibyte_text_near_ga_prefix_does_not_panic() {
+        extract_tracking_ids("G-ABCDEFGHé€€€");
+    }
 }

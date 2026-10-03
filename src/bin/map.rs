@@ -1,11 +1,13 @@
 // src/bin/map.rs
 use base64::{engine::general_purpose, Engine as _};
-use maxminddb::geoip2::City;
 use maxminddb::Reader;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+
+#[path = "../geo.rs"]
+mod geo;
 
 // Embed all assets directly into the binary at compile time
 const MAXMIND_DB: &[u8] = include_bytes!("../../assets/GeoLite2-City.mmdb");
@@ -23,7 +25,7 @@ struct BaselineConfig {
 #[derive(Deserialize, Debug)]
 struct DomainProfile {
     expected_ips: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "cert_sha256")]
     expected_cert_sha256: Option<String>,
 }
 
@@ -79,40 +81,20 @@ fn main() {
         }
 
         for ip in profile.expected_ips {
-            if let Ok(ip_addr) = ip.parse::<std::net::IpAddr>() {
-                if let Ok(city) = reader.lookup::<City>(ip_addr) {
-                    let loc = city.location.as_ref();
-                    let lat = loc.and_then(|l| l.latitude).unwrap_or(0.0);
-                    let lon = loc.and_then(|l| l.longitude).unwrap_or(0.0);
-
-                    let city_name = city
-                        .city
-                        .as_ref()
-                        .and_then(|c| c.names.as_ref())
-                        .and_then(|n| n.get("en").map(|s| s.to_string()))
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    let country_name = city
-                        .country
-                        .as_ref()
-                        .and_then(|c| c.names.as_ref())
-                        .and_then(|n| n.get("en").map(|s| s.to_string()))
-                        .unwrap_or_else(|| "Unknown".to_string());
-
-                    nodes.push(MappedNode {
-                        domain: domain.clone(),
-                        ip,
-                        lat,
-                        lon,
-                        city: city_name,
-                        country: country_name,
-                        cert: profile
-                            .expected_cert_sha256
-                            .as_deref()
-                            .map(|s| s.chars().take(16).collect::<String>() + "...")
-                            .unwrap_or_else(|| "Unknown".to_string()),
-                    });
-                }
+            if let Some(info) = geo::lookup(&reader, &ip) {
+                nodes.push(MappedNode {
+                    domain: domain.clone(),
+                    ip,
+                    lat: info.lat.unwrap_or(0.0),
+                    lon: info.lon.unwrap_or(0.0),
+                    city: info.city,
+                    country: info.country,
+                    cert: profile
+                        .expected_cert_sha256
+                        .as_deref()
+                        .map(|s| s.chars().take(16).collect::<String>() + "...")
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                });
             }
         }
     }
